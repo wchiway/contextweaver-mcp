@@ -9,3 +9,7 @@ dist
 test-*
 .codex
 .pnpm-store
+
+# Local tooling
+.serena/
+*.tgz
