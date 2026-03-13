@@ -491,7 +491,15 @@ export class SearchService {
   private async rerank(query: string, candidates: ScoredChunk[]): Promise<ScoredChunk[]> {
     if (candidates.length === 0) return [];
 
-    const reranker = getRerankerClient();
+    let reranker: ReturnType<typeof getRerankerClient>;
+    try {
+      reranker = getRerankerClient();
+    } catch (err) {
+      const error = err as { message?: string };
+      logger.warn({ error: error.message }, 'Reranker 未配置，跳过 rerank');
+      return candidates;
+    }
+
     const queryTokens = this.extractQueryTokens(query);
 
     // 构造 rerank 文本：围绕命中行截取，而非头尾截断
@@ -502,16 +510,22 @@ export class SearchService {
       return `${bc}\n${code}`;
     };
 
-    const reranked = await reranker.rerankWithData(query, candidates, textExtractor, {
-      topN: this.config.rerankTopN,
-    });
+    try {
+      const reranked = await reranker.rerankWithData(query, candidates, textExtractor, {
+        topN: this.config.rerankTopN,
+      });
 
-    return reranked
-      .filter((r) => r.data !== undefined)
-      .map((r) => ({
-        ...(r.data as ScoredChunk),
-        score: r.score,
-      }));
+      return reranked
+        .filter((r) => r.data !== undefined)
+        .map((r) => ({
+          ...(r.data as ScoredChunk),
+          score: r.score,
+        }));
+    } catch (err) {
+      const error = err as { message?: string };
+      logger.warn({ error: error.message }, 'Rerank 失败，降级为未 rerank 的候选结果');
+      return candidates;
+    }
   }
 
   // Smart TopK Cutoff

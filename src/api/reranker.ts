@@ -27,10 +27,17 @@ interface RerankResult {
   };
 }
 
-/** Rerank 响应体 */
+/**
+ * Rerank 响应体
+ *
+ * 兼容多种服务商：
+ * - SiliconFlow/Cohere 风格：顶层 `results` + `id`
+ * - 阿里百炼（DashScope）风格：顶层 `output.results` + `request_id`（见官方 text-rerank 文档）
+ */
 interface RerankResponse {
-  id: string;
-  results: RerankResult[];
+  // Cohere 风格
+  id?: string;
+  results?: RerankResult[];
   meta?: {
     api_version?: {
       version: string;
@@ -42,9 +49,22 @@ interface RerankResponse {
       input_tokens?: number;
     };
   };
+
+  // DashScope 风格
+  output?: {
+    results?: RerankResult[];
+  };
+  usage?: {
+    total_tokens?: number;
+  };
+  request_id?: string;
+
+  // DashScope 失败响应（code/message）
+  code?: string;
+  message?: string;
 }
 
-/** Rerank 错误响应 */
+/** Rerank 错误响应（部分服务商使用 error 对象） */
 interface RerankErrorResponse {
   error?: {
     message: string;
@@ -109,7 +129,7 @@ export class RerankerClient {
       query,
       documents,
       top_n: Math.min(topN, documents.length),
-      return_documents: false, // 不需要返回原文，节省带宽
+      return_documents: false,
     };
 
     // 可选参数
@@ -131,16 +151,45 @@ export class RerankerClient {
           body: JSON.stringify(requestBody),
         });
 
-        const data = (await response.json()) as RerankResponse & RerankErrorResponse;
+        // 注意：部分服务可能返回空 body / 非 JSON（例如网关错误页），此时 response.json() 会抛
+        const contentType = response.headers.get('content-type') || undefined;
+        const rawText = await response.text();
+
+        if (!rawText) {
+          throw new Error(`Rerank API 返回空响应: HTTP ${response.status}`);
+        }
+
+        let data: (RerankResponse & RerankErrorResponse) | undefined;
+        try {
+          data = JSON.parse(rawText) as RerankResponse & RerankErrorResponse;
+        } catch {
+          const snippet = rawText.slice(0, 200);
+          const meta = contentType ? `, content-type=${contentType}` : '';
+          throw new Error(
+            `Rerank API 返回非 JSON 响应: HTTP ${response.status}${meta}, body=${JSON.stringify(snippet)}`,
+          );
+        }
 
         // 检查 API 错误
-        if (!response.ok || data.error) {
-          const errorMsg = data.error?.message || `HTTP ${response.status}`;
+        // - SiliconFlow/Cohere 风格：可能返回 data.error
+        // - DashScope 风格：失败时常返回 code/message
+        if (!response.ok || data.error || data.code || data.message) {
+          const errorMsg =
+            data.error?.message ||
+            data.message ||
+            (data.code ? `${data.code}` : '') ||
+            `HTTP ${response.status}`;
           throw new Error(`Rerank API 错误: ${errorMsg}`);
         }
 
+        // 兼容解析结果：优先 Cohere 顶层 results，其次 DashScope output.results
+        const rerankResults = data.results ?? data.output?.results;
+        if (!rerankResults || !Array.isArray(rerankResults)) {
+          throw new Error('Rerank API 返回格式不符合预期：缺少 results/output.results');
+        }
+
         // 转换结果
-        const results: RerankedDocument[] = data.results.map((item) => ({
+        const results: RerankedDocument[] = rerankResults.map((item) => ({
           originalIndex: item.index,
           score: item.relevance_score,
           text: documents[item.index],

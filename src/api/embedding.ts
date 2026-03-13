@@ -254,7 +254,7 @@ class RateLimitController {
     );
 
     // 创建暂停 Promise
-    let resumeResolve: () => void = () => { };
+    let resumeResolve: () => void = () => {};
     this.pausePromise = new Promise<void>((resolve) => {
       resumeResolve = resolve;
     });

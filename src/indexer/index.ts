@@ -140,10 +140,7 @@ export class Indexer {
     // 避免这些文件在下一轮被持续判定为“需要自愈”
     if (noChunkSettled.length > 0) {
       batchUpdateVectorIndexHash(db, noChunkSettled);
-      logger.debug(
-        { count: noChunkSettled.length },
-        '无可索引 chunk，标记向量索引状态为已收敛',
-      );
+      logger.debug({ count: noChunkSettled.length }, '无可索引 chunk，标记向量索引状态为已收敛');
     }
 
     // 批量处理需要索引的文件
@@ -208,7 +205,8 @@ export class Indexer {
     let embeddings: number[][];
     try {
       // 传递进度回调给 embedBatch，让它在每个 API 批次完成时报告进度
-      const results = await this.embeddingClient.embedBatch(allTexts, 20, onProgress);
+      // 阿里百炼 text-embedding-v4 的批次大小上限为 10；这里将单次请求的文本数降到 10，避免 400: batch size invalid
+      const results = await this.embeddingClient.embedBatch(allTexts, 10, onProgress);
       embeddings = results.map((r) => r.embedding);
     } catch (err) {
       const error = err as { message?: string; stack?: string };
