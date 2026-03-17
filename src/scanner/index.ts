@@ -17,6 +17,7 @@ import {
 } from '../db/index.js';
 import { closeAllIndexers, getIndexer } from '../indexer/index.js';
 import { logger } from '../utils/logger.js';
+import { invalidateAllExpanderCaches } from '../search/GraphExpander.js';
 import { closeAllVectorStores } from '../vectorStore/index.js';
 import { crawl } from './crawler.js';
 import { initFilter } from './filter.js';
@@ -117,6 +118,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     );
 
     // 处理文件（文件处理很快，不需要报告进度）
+    // TODO: results 数组随文件数线性增长，大型代码库可考虑改为流式处理以降低内存峰值
     const results: ProcessResult[] = [];
     const batchSize = 100;
     for (let i = 0; i < filePaths.length; i += batchSize) {
@@ -277,6 +279,9 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
 
     // 报告完成
     options.onProgress?.(100, 100, '索引完成');
+
+    // 索引完成后使 GraphExpander 缓存失效，确保后续搜索使用最新文件列表
+    invalidateAllExpanderCaches();
 
     return stats;
   } finally {

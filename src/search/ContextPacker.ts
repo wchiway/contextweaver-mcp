@@ -5,7 +5,7 @@
  * 最终输出适合 LLM 消费的上下文包。
  */
 
-import { initDb } from '../db/index.js';
+import type Database from 'better-sqlite3';
 import type { ScoredChunk, SearchConfig, Segment } from './types.js';
 
 export class ContextPacker {
@@ -20,14 +20,13 @@ export class ContextPacker {
   /**
    * 打包：合并 chunks → 按文件聚合段落 → 预算裁剪
    */
-  async pack(chunks: ScoredChunk[]): Promise<Array<{ filePath: string; segments: Segment[] }>> {
+  async pack(chunks: ScoredChunk[], db: Database.Database): Promise<Array<{ filePath: string; segments: Segment[] }>> {
     if (chunks.length === 0) return [];
 
     // 1. 按文件分组
     const byFile = this.groupByFile(chunks);
 
     // 2. 每个文件内合并区间 + 从原文件切片
-    const db = initDb(this.projectId);
     const result: Array<{ filePath: string; segments: Segment[] }> = [];
     let totalChars = 0;
 

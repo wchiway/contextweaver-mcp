@@ -164,13 +164,13 @@ export class Indexer {
   }
 
   /**
-   * 批量索引文件（性能优化版）
+   * 批量索引文件（内存优化版）
    *
    * 优化策略：
-   * 1. Embedding 已批量化（原有）
-   * 2. LanceDB 写入批量化：N 次 upsertFile → 1 次 batchUpsertFiles
-   * 3. FTS 写入批量化：N 次删除+插入 → 1 次批量删除 + 1 次批量插入
-   * 4. 日志汇总化：逐文件日志 → 汇总日志
+   * 1. 文件按批次处理（每批 100 个文件），避免一次性加载所有 embedding 到内存
+   * 2. 每批独立完成：collect texts → embedBatch → write LanceDB → write FTS → update SQLite
+   * 3. 批次间释放中间数据引用，让 GC 回收内存
+   * 4. ProgressTracker 跨批次累计，总数基于所有文件
    */
   private async batchIndex(
     db: Database.Database,
@@ -181,158 +181,199 @@ export class Indexer {
       return { success: 0, errors: 0 };
     }
 
-    // ===== 阶段 1: 收集所有需要 embedding 的文本 =====
-    const allTexts: string[] = [];
-    const globalIndexByFileChunk: number[][] = [];
+    const FILE_BATCH_SIZE = 100;
+    let totalSuccess = 0;
+    let totalErrors = 0;
 
-    for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
-      const file = files[fileIdx];
-      globalIndexByFileChunk[fileIdx] = [];
-      for (let chunkIdx = 0; chunkIdx < file.chunks.length; chunkIdx++) {
-        const globalIdx = allTexts.length;
-        allTexts.push(file.chunks[chunkIdx].vectorText);
-        globalIndexByFileChunk[fileIdx][chunkIdx] = globalIdx;
-      }
-    }
-
-    if (allTexts.length === 0) {
+    // 计算所有文件的总 chunk 数，用于全局进度追踪
+    const totalChunks = files.reduce((sum, f) => sum + f.chunks.length, 0);
+    if (totalChunks === 0) {
       return { success: 0, errors: 0 };
     }
 
-    // ===== 阶段 2: 批量获取 embeddings =====
-    logger.info({ count: allTexts.length, files: files.length }, '开始批量 Embedding');
+    let completedChunks = 0;
 
-    let embeddings: number[][];
-    try {
-      // 传递进度回调给 embedBatch，让它在每个 API 批次完成时报告进度
-      // 阿里百炼 text-embedding-v4 的批次大小上限为 10；这里将单次请求的文本数降到 10，避免 400: batch size invalid
-      const results = await this.embeddingClient.embedBatch(allTexts, 10, onProgress);
-      embeddings = results.map((r) => r.embedding);
-    } catch (err) {
-      const error = err as { message?: string; stack?: string };
-      logger.error({ error: error.message, stack: error.stack }, 'Embedding 失败');
-      clearVectorIndexHash(
-        db,
-        files.map((f) => f.path),
-      );
-      return { success: 0, errors: files.length };
-    }
+    logger.info(
+      { totalFiles: files.length, totalChunks, batches: Math.ceil(files.length / FILE_BATCH_SIZE) },
+      '开始分批索引',
+    );
 
-    // ===== 阶段 3: 组装所有 ChunkRecords =====
-    const filesToUpsert: Array<{ path: string; hash: string; records: ChunkRecord[] }> = [];
-    const allFtsChunks: Array<{
-      chunkId: string;
-      filePath: string;
-      chunkIndex: number;
-      breadcrumb: string;
-      content: string;
-    }> = [];
-    const successFiles: Array<{ path: string; hash: string }> = [];
-    const errorFiles: string[] = [];
+    for (let batchStart = 0; batchStart < files.length; batchStart += FILE_BATCH_SIZE) {
+      const batchFiles = files.slice(batchStart, batchStart + FILE_BATCH_SIZE);
+      const batchNum = Math.floor(batchStart / FILE_BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(files.length / FILE_BATCH_SIZE);
 
-    for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
-      const file = files[fileIdx];
+      // ===== 阶段 1: 收集本批次需要 embedding 的文本 =====
+      const batchTexts: string[] = [];
+      const indexByFileChunk: number[][] = [];
 
-      try {
-        const records: ChunkRecord[] = [];
-
+      for (let fileIdx = 0; fileIdx < batchFiles.length; fileIdx++) {
+        const file = batchFiles[fileIdx];
+        indexByFileChunk[fileIdx] = [];
         for (let chunkIdx = 0; chunkIdx < file.chunks.length; chunkIdx++) {
-          const chunk = file.chunks[chunkIdx];
-          const globalIdx = globalIndexByFileChunk[fileIdx][chunkIdx];
-
-          if (globalIdx === undefined) {
-            throw new Error(`找不到 chunk 的 embedding: ${file.path}#${chunkIdx}`);
-          }
-
-          const record: ChunkRecord = {
-            chunk_id: `${file.path}#${file.hash}#${chunkIdx}`,
-            file_path: file.path,
-            file_hash: file.hash,
-            chunk_index: chunkIdx,
-            vector: embeddings[globalIdx],
-            display_code: chunk.displayCode,
-            vector_text: chunk.vectorText,
-            language: chunk.metadata.language,
-            breadcrumb: chunk.metadata.contextPath.join(' > '),
-            start_index: chunk.metadata.startIndex,
-            end_index: chunk.metadata.endIndex,
-            raw_start: chunk.metadata.rawSpan.start,
-            raw_end: chunk.metadata.rawSpan.end,
-            vec_start: chunk.metadata.vectorSpan.start,
-            vec_end: chunk.metadata.vectorSpan.end,
-          };
-
-          records.push(record);
-
-          // 收集 FTS 数据
-          allFtsChunks.push({
-            chunkId: record.chunk_id,
-            filePath: record.file_path,
-            chunkIndex: record.chunk_index,
-            breadcrumb: record.breadcrumb,
-            content: `${record.breadcrumb}\n${record.display_code}`,
-          });
+          const idx = batchTexts.length;
+          batchTexts.push(file.chunks[chunkIdx].vectorText);
+          indexByFileChunk[fileIdx][chunkIdx] = idx;
         }
+      }
 
-        filesToUpsert.push({ path: file.path, hash: file.hash, records });
-        successFiles.push({ path: file.path, hash: file.hash });
+      if (batchTexts.length === 0) {
+        totalSuccess += batchFiles.length;
+        continue;
+      }
+
+      // ===== 阶段 2: 批量获取 embeddings =====
+      logger.info(
+        { batch: `${batchNum}/${totalBatches}`, texts: batchTexts.length, files: batchFiles.length },
+        '批次 Embedding 开始',
+      );
+
+      let embeddings: number[][];
+      const EMBED_BATCH_SIZE = 10;
+      try {
+        // 包装 onProgress，将 embedding 子批次进度映射到全局 chunk 进度
+        const batchOnProgress = onProgress
+          ? (_completed: number, _total: number) => {
+              // 每个 embedding 子批次完成时报告全局进度
+              onProgress(completedChunks + Math.min(_completed * EMBED_BATCH_SIZE, batchTexts.length), totalChunks);
+            }
+          : undefined;
+
+        const results = await this.embeddingClient.embedBatch(batchTexts, EMBED_BATCH_SIZE, batchOnProgress);
+        embeddings = results.map((r) => r.embedding);
       } catch (err) {
         const error = err as { message?: string; stack?: string };
         logger.error(
-          { path: file.path, error: error.message, stack: error.stack },
-          '组装 ChunkRecord 失败',
+          { error: error.message, stack: error.stack, batch: `${batchNum}/${totalBatches}` },
+          '批次 Embedding 失败',
         );
-        errorFiles.push(file.path);
-      }
-    }
-
-    // ===== 阶段 4: 批量写入 LanceDB =====
-    if (filesToUpsert.length > 0) {
-      try {
-        await this.vectorStore?.batchUpsertFiles(filesToUpsert);
-        logger.info(
-          { files: filesToUpsert.length, chunks: allFtsChunks.length },
-          'LanceDB 批量写入完成',
-        );
-      } catch (err) {
-        const error = err as { message?: string; stack?: string };
-        logger.error({ error: error.message, stack: error.stack }, 'LanceDB 批量写入失败');
-        // 所有文件都失败
         clearVectorIndexHash(
           db,
-          files.map((f) => f.path),
+          batchFiles.map((f) => f.path),
         );
-        return { success: 0, errors: files.length };
+        totalErrors += batchFiles.length;
+        completedChunks += batchTexts.length;
+        continue; // 继续处理下一批
       }
-    }
 
-    // ===== 阶段 5: 批量更新 FTS 索引 =====
-    if (isChunksFtsInitialized(db) && allFtsChunks.length > 0) {
-      try {
-        // 批量删除旧 FTS 记录
-        const pathsToDelete = filesToUpsert.map((f) => f.path);
-        batchDeleteFileChunksFts(db, pathsToDelete);
-        // 批量插入新 FTS 记录
-        batchUpsertChunkFts(db, allFtsChunks);
-        logger.info(
-          { files: pathsToDelete.length, chunks: allFtsChunks.length },
-          'FTS 批量更新完成',
-        );
-      } catch (err) {
-        const error = err as { message?: string };
-        logger.warn({ error: error.message }, 'FTS 批量更新失败（向量索引已成功）');
+      // ===== 阶段 3: 组装 ChunkRecords =====
+      const filesToUpsert: Array<{ path: string; hash: string; records: ChunkRecord[] }> = [];
+      const ftsChunks: Array<{
+        chunkId: string;
+        filePath: string;
+        chunkIndex: number;
+        breadcrumb: string;
+        content: string;
+      }> = [];
+      const successFiles: Array<{ path: string; hash: string }> = [];
+      const errorFiles: string[] = [];
+
+      for (let fileIdx = 0; fileIdx < batchFiles.length; fileIdx++) {
+        const file = batchFiles[fileIdx];
+
+        try {
+          const records: ChunkRecord[] = [];
+
+          for (let chunkIdx = 0; chunkIdx < file.chunks.length; chunkIdx++) {
+            const chunk = file.chunks[chunkIdx];
+            const embIdx = indexByFileChunk[fileIdx][chunkIdx];
+
+            if (embIdx === undefined) {
+              throw new Error(`找不到 chunk 的 embedding: ${file.path}#${chunkIdx}`);
+            }
+
+            const record: ChunkRecord = {
+              chunk_id: `${file.path}#${file.hash}#${chunkIdx}`,
+              file_path: file.path,
+              file_hash: file.hash,
+              chunk_index: chunkIdx,
+              vector: embeddings[embIdx],
+              display_code: chunk.displayCode,
+              vector_text: chunk.vectorText,
+              language: chunk.metadata.language,
+              breadcrumb: chunk.metadata.contextPath.join(' > '),
+              start_index: chunk.metadata.startIndex,
+              end_index: chunk.metadata.endIndex,
+              raw_start: chunk.metadata.rawSpan.start,
+              raw_end: chunk.metadata.rawSpan.end,
+              vec_start: chunk.metadata.vectorSpan.start,
+              vec_end: chunk.metadata.vectorSpan.end,
+            };
+
+            records.push(record);
+
+            ftsChunks.push({
+              chunkId: record.chunk_id,
+              filePath: record.file_path,
+              chunkIndex: record.chunk_index,
+              breadcrumb: record.breadcrumb,
+              content: `${record.breadcrumb}\n${record.display_code}`,
+            });
+          }
+
+          filesToUpsert.push({ path: file.path, hash: file.hash, records });
+          successFiles.push({ path: file.path, hash: file.hash });
+        } catch (err) {
+          const error = err as { message?: string; stack?: string };
+          logger.error(
+            { path: file.path, error: error.message, stack: error.stack },
+            '组装 ChunkRecord 失败',
+          );
+          errorFiles.push(file.path);
+        }
       }
+
+      // ===== 阶段 4: 批量写入 LanceDB =====
+      if (filesToUpsert.length > 0) {
+        try {
+          await this.vectorStore?.batchUpsertFiles(filesToUpsert);
+        } catch (err) {
+          const error = err as { message?: string; stack?: string };
+          logger.error({ error: error.message, stack: error.stack }, 'LanceDB 批量写入失败');
+          clearVectorIndexHash(
+            db,
+            batchFiles.map((f) => f.path),
+          );
+          totalErrors += batchFiles.length;
+          completedChunks += batchTexts.length;
+          continue;
+        }
+      }
+
+      // ===== 阶段 5: 批量更新 FTS 索引 =====
+      if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
+        try {
+          const pathsToDelete = filesToUpsert.map((f) => f.path);
+          batchDeleteFileChunksFts(db, pathsToDelete);
+          batchUpsertChunkFts(db, ftsChunks);
+        } catch (err) {
+          const error = err as { message?: string };
+          logger.warn({ error: error.message }, 'FTS 批量更新失败（向量索引已成功）');
+        }
+      }
+
+      // ===== 阶段 6: 更新 SQLite 元数据 =====
+      if (successFiles.length > 0) {
+        batchUpdateVectorIndexHash(db, successFiles);
+      }
+
+      totalSuccess += successFiles.length;
+      totalErrors += errorFiles.length;
+      completedChunks += batchTexts.length;
+
+      logger.info(
+        {
+          batch: `${batchNum}/${totalBatches}`,
+          success: successFiles.length,
+          errors: errorFiles.length,
+        },
+        '批次索引完成',
+      );
     }
 
-    // ===== 阶段 6: 更新 SQLite 元数据 =====
-    if (successFiles.length > 0) {
-      batchUpdateVectorIndexHash(db, successFiles);
-    }
+    logger.info({ success: totalSuccess, errors: totalErrors }, '全部批次索引完成');
 
-    // 汇总日志
-    logger.info({ success: successFiles.length, errors: errorFiles.length }, '批量索引完成');
-
-    return { success: successFiles.length, errors: errorFiles.length };
+    return { success: totalSuccess, errors: totalErrors };
   }
 
   /**

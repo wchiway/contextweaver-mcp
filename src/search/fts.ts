@@ -8,7 +8,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { logger } from '../utils/logger.js';
+import { isDebugEnabled, logger } from '../utils/logger.js';
 
 // FTS Tokenizer 探测
 
@@ -289,17 +289,19 @@ export function searchChunksFts(
     );
   }
 
-  logger.debug(
-    {
-      chunkCount: results.length,
-      topChunks: results.slice(0, 5).map((r) => ({
-        path: r.filePath.split('/').slice(-2).join('/'),
-        chunkIndex: r.chunkIndex,
-        bm25: r.score.toFixed(3),
-      })),
-    },
-    'Chunk FTS 召回结果',
-  );
+  if (isDebugEnabled()) {
+    logger.debug(
+      {
+        chunkCount: results.length,
+        topChunks: results.slice(0, 5).map((r) => ({
+          path: r.filePath.split('/').slice(-2).join('/'),
+          chunkIndex: r.chunkIndex,
+          bm25: r.score.toFixed(3),
+        })),
+      },
+      'Chunk FTS 召回结果',
+    );
+  }
 
   return results.sort((a, b) => b.score - a.score);
 }
@@ -573,16 +575,18 @@ export function searchFilesFts(
   }
 
   // 详细的召回日志
-  logger.debug(
-    {
-      fileCount: results.length,
-      topFiles: results.slice(0, 5).map((r) => ({
-        path: r.path.split('/').slice(-2).join('/'),
-        bm25: r.score.toFixed(3),
-      })),
-    },
-    'FTS 召回结果',
-  );
+  if (isDebugEnabled()) {
+    logger.debug(
+      {
+        fileCount: results.length,
+        topFiles: results.slice(0, 5).map((r) => ({
+          path: r.path.split('/').slice(-2).join('/'),
+          bm25: r.score.toFixed(3),
+        })),
+      },
+      'FTS 召回结果',
+    );
+  }
 
   return results.sort((a, b) => b.score - a.score);
 }

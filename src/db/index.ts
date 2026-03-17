@@ -124,6 +124,11 @@ export function initDb(projectId: string): Database.Database {
   initFilesFts(db);
   initChunksFts(db);
 
+  // 性能优化：SQLite PRAGMA
+  db.pragma('synchronous = NORMAL');
+  db.pragma('temp_store = MEMORY');
+  db.pragma('cache_size = -64000');
+
   return db;
 }
 
@@ -294,6 +299,8 @@ export function batchDelete(db: Database.Database, paths: string[]): void {
  */
 export function clear(db: Database.Database): void {
   db.exec('DELETE FROM files');
+  db.exec('DELETE FROM files_fts');
+  db.exec('DELETE FROM chunks_fts');
 }
 
 // ===========================================

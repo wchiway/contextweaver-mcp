@@ -234,13 +234,25 @@ export class VectorStore {
 
   /**
    * 批量删除文件（性能优化：单次 DELETE 替代 N 次循环）
+   * 当文件数超过 500 时分批处理，防止 LanceDB filter 字符串过长
    */
   async deleteFiles(filePaths: string[]): Promise<void> {
     if (!this.table || filePaths.length === 0) return;
 
-    // 使用单条 DELETE + OR 条件，将 N 次往返优化为 1 次
-    const conditions = filePaths.map((p) => `file_path = '${this.escapeString(p)}'`).join(' OR ');
-    await this.table.delete(conditions);
+    const BATCH_SIZE = 500;
+
+    if (filePaths.length <= BATCH_SIZE) {
+      // 小批量：单次查询
+      const conditions = filePaths.map((p) => `file_path = '${this.escapeString(p)}'`).join(' OR ');
+      await this.table.delete(conditions);
+    } else {
+      // 大批量：分批处理
+      for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
+        const batch = filePaths.slice(i, i + BATCH_SIZE);
+        const conditions = batch.map((p) => `file_path = '${this.escapeString(p)}'`).join(' OR ');
+        await this.table.delete(conditions);
+      }
+    }
   }
 
   /**
@@ -277,6 +289,7 @@ export class VectorStore {
 
   /**
    * 批量获取多个文件的 chunks（性能优化：单次查询替代 N 次循环）
+   * 当文件数超过 500 时分批处理，防止 LanceDB filter 字符串过长
    *
    * 适用于 GraphExpander 扩展、词法召回等需要批量获取的场景
    * @returns Map<filePath, ChunkRecord[]>，每个文件的 chunks 已按 chunk_index 排序
@@ -285,19 +298,23 @@ export class VectorStore {
     const result = new Map<string, ChunkRecord[]>();
     if (!this.table || filePaths.length === 0) return result;
 
-    // 单次查询所有文件
-    const conditions = filePaths.map((p) => `file_path = '${this.escapeString(p)}'`).join(' OR ');
+    const BATCH_SIZE = 500;
 
-    const rows = await this.table.query().where(conditions).toArray();
+    // 分批查询（小于等于 BATCH_SIZE 时只执行一次）
+    for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
+      const batch = filePaths.slice(i, i + BATCH_SIZE);
+      const conditions = batch.map((p) => `file_path = '${this.escapeString(p)}'`).join(' OR ');
+      const rows = await this.table.query().where(conditions).toArray();
 
-    // 按文件分组
-    for (const row of rows as ChunkRecord[]) {
-      let arr = result.get(row.file_path);
-      if (!arr) {
-        arr = [];
-        result.set(row.file_path, arr);
+      // 按文件分组
+      for (const row of rows as ChunkRecord[]) {
+        let arr = result.get(row.file_path);
+        if (!arr) {
+          arr = [];
+          result.set(row.file_path, arr);
+        }
+        arr.push(row);
       }
-      arr.push(row);
     }
 
     // 每个文件内按 chunk_index 排序

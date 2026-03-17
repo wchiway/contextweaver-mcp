@@ -14,6 +14,7 @@ import { logger } from '../utils/logger.js';
 import { type ChunkRecord, getVectorStore, type VectorStore } from '../vectorStore/index.js';
 import { createResolvers, type ImportResolver } from './resolvers/index.js';
 import type { ScoredChunk, SearchConfig } from './types.js';
+import { scoreChunkTokenOverlap } from './utils.js';
 
 // ===========================================
 // 类型定义
@@ -268,10 +269,15 @@ export class GraphExpander {
       const filePath = prefixSeeds[0].filePath;
       const allChunks = allChunksMap.get(filePath) ?? [];
 
+      // 性能优化：预计算所有 chunk 的 breadcrumb 前缀，避免在过滤中重复调用
+      const chunkPrefixCache = new Map<number, string | null>();
+      for (const chunk of allChunks) {
+        chunkPrefixCache.set(chunk.chunk_index, this.extractBreadcrumbPrefix(chunk.breadcrumb));
+      }
+
       // 找到同前缀的 chunks
       const matchingChunks = allChunks.filter((chunk) => {
-        const chunkPrefix = this.extractBreadcrumbPrefix(chunk.breadcrumb);
-        return chunkPrefix === prefix;
+        return chunkPrefixCache.get(chunk.chunk_index) === prefix;
       });
 
       // 排除已有的 chunks，取前 N 个
@@ -337,6 +343,16 @@ export class GraphExpander {
       queue.push({ filePath, depth: 0, seedScore });
     }
 
+    // Phase 1: 解析所有 import 目标路径，收集需要获取 chunks 的文件
+    interface ResolvedImport {
+      targetPath: string;
+      depth: number;
+      seedScore: number;
+      sourceFilePath: string;
+    }
+    const resolvedImports: ResolvedImport[] = [];
+    const allTargetPaths = new Set<string>();
+
     while (queue.length > 0) {
       const item = queue.shift();
       if (!item) break;
@@ -361,10 +377,9 @@ export class GraphExpander {
       const importStrs = resolver.extract(row.content);
       if (importStrs.length === 0) continue;
 
-      // 4. 解析路径并获取 Chunk
+      // 4. 解析路径
       const perFileLimit = depth === 0 ? importFilesPerSeed : Math.min(importFilesPerSeed, 2);
       let importCount = 0;
-      // 缓存已处理的 import，避免重复处理
       const processedImports = new Set<string>();
 
       for (const importStr of importStrs) {
@@ -372,35 +387,13 @@ export class GraphExpander {
         if (processedImports.has(importStr)) continue;
         processedImports.add(importStr);
 
-        // 核心: 使用解析器 + 全局文件索引进行解析
         // allFilePaths 在 expand() 入口处通过 loadFileIndex() 确保已加载
         const targetPath = resolver.resolve(importStr, filePath, this.allFilePaths as Set<string>);
 
-        if (!targetPath || targetPath === filePath) continue; // 排除引用自己
+        if (!targetPath || targetPath === filePath) continue;
 
-        const importChunks = await this.vectorStore?.getFileChunks(targetPath);
-        if (!importChunks || importChunks.length === 0) continue;
-
-        const selectedChunks = this.selectImportChunks(
-          importChunks,
-          chunksPerImportFile,
-          queryTokens,
-        );
-        const depthDecay = depth === 0 ? 1 : decayDepth;
-
-        for (const chunk of selectedChunks) {
-          const key = `${targetPath}#${chunk.chunk_index}`;
-          if (existingKeys.has(key)) continue;
-
-          result.push({
-            filePath: targetPath,
-            chunkIndex: chunk.chunk_index,
-            score: seedScore * decayImport * depthDecay,
-            source: 'import',
-            record: { ...chunk, _distance: 0 },
-          });
-        }
-
+        allTargetPaths.add(targetPath);
+        resolvedImports.push({ targetPath, depth, seedScore, sourceFilePath: filePath });
         importCount++;
 
         if (depth === 0 && this.isBarrelFile(targetPath)) {
@@ -409,7 +402,45 @@ export class GraphExpander {
         }
       }
     }
-    return result;
+
+    // Phase 2: 批量获取所有 import 目标文件的 chunks（N 次查询 → 1 次）
+    if (allTargetPaths.size === 0) return result;
+    const importChunksMap = await this.vectorStore?.getFilesChunks(Array.from(allTargetPaths));
+    if (!importChunksMap) return result;
+
+    // Phase 3: 使用批量结果构建扩展 chunks（按 key 去重取 max score）
+    const bestByKey = new Map<string, ScoredChunk>();
+
+    for (const { targetPath, depth, seedScore } of resolvedImports) {
+      const importChunks = importChunksMap.get(targetPath);
+      if (!importChunks || importChunks.length === 0) continue;
+
+      const selectedChunks = this.selectImportChunks(
+        importChunks,
+        chunksPerImportFile,
+        queryTokens,
+      );
+      const depthDecay = depth === 0 ? 1 : decayDepth;
+
+      for (const chunk of selectedChunks) {
+        const key = `${targetPath}#${chunk.chunk_index}`;
+        if (existingKeys.has(key)) continue;
+
+        const score = seedScore * decayImport * depthDecay;
+        const existing = bestByKey.get(key);
+        if (!existing || score > existing.score) {
+          bestByKey.set(key, {
+            filePath: targetPath,
+            chunkIndex: chunk.chunk_index,
+            score,
+            source: 'import',
+            record: { ...chunk, _distance: 0 },
+          });
+        }
+      }
+    }
+
+    return Array.from(bestByKey.values());
   }
 
   // =========================================
@@ -468,7 +499,7 @@ export class GraphExpander {
 
     const scored = sortedByIndex.map((chunk) => ({
       chunk,
-      score: this.scoreChunkTokenOverlap(chunk, queryTokens),
+      score: scoreChunkTokenOverlap(chunk, queryTokens),
     }));
 
     const overlapped = scored
@@ -478,32 +509,6 @@ export class GraphExpander {
       .map((s) => s.chunk);
 
     return overlapped.length > 0 ? overlapped : sortedByIndex.slice(0, limit);
-  }
-
-  /**
-   * 计算 chunk 与查询的 token overlap 得分
-   */
-  private scoreChunkTokenOverlap(
-    chunk: Pick<ChunkRecord, 'breadcrumb' | 'display_code'>,
-    queryTokens: Set<string>,
-  ): number {
-    const text = `${chunk.breadcrumb} ${chunk.display_code}`.toLowerCase();
-    let score = 0;
-
-    for (const token of queryTokens) {
-      if (text.includes(token)) {
-        const wordBoundaryRegex = new RegExp(
-          `\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
-        );
-        if (wordBoundaryRegex.test(text)) {
-          score += 1;
-        } else {
-          score += 0.5;
-        }
-      }
-    }
-
-    return score;
   }
 
   /**
@@ -522,6 +527,16 @@ export class GraphExpander {
 // ===========================================
 
 const expanders = new Map<string, GraphExpander>();
+
+/**
+ * 使所有 GraphExpander 实例的文件索引缓存失效
+ * 用于索引完成后刷新缓存，确保搜索使用最新的文件列表
+ */
+export function invalidateAllExpanderCaches(): void {
+  for (const expander of expanders.values()) {
+    expander.invalidateFileIndex();
+  }
+}
 
 /**
  * 获取或创建 GraphExpander 实例

@@ -27,28 +27,7 @@ import {
 } from './fts.js';
 import { getGraphExpander } from './GraphExpander.js';
 import type { ContextPack, ScoredChunk, SearchConfig } from './types.js';
-
-// ===========================================
-// 性能优化：Token 边界 RegExp 缓存
-// ===========================================
-
-/** 缓存预编译的 token 边界正则表达式 */
-const tokenBoundaryRegexCache = new Map<string, RegExp>();
-
-/**
- * 获取或创建 token 边界正则表达式（带缓存）
- *
- * 避免每次 scoreChunkTokenOverlap 调用都创建 N 个 RegExp 对象
- */
-function getTokenBoundaryRegex(token: string): RegExp {
-  let regex = tokenBoundaryRegexCache.get(token);
-  if (!regex) {
-    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    regex = new RegExp(`\\b${escaped}\\b`);
-    tokenBoundaryRegexCache.set(token, regex);
-  }
-  return regex;
-}
+import { scoreChunkTokenOverlap } from './utils.js';
 
 export class SearchService {
   private projectId: string;
@@ -104,7 +83,7 @@ export class SearchService {
     // 6. 打包
     t0 = Date.now();
     const packer = new ContextPacker(this.projectId, this.config);
-    const files = await packer.pack([...seeds, ...expanded]);
+    const files = await packer.pack([...seeds, ...expanded], this.db as Database.Database);
     timingMs.pack = Date.now() - t0;
 
     return {
@@ -277,15 +256,21 @@ export class SearchService {
 
     // 2. 提取查询 tokens（用于 chunk 级别打分）
     const queryTokens = this.extractQueryTokens(query);
-    logger.debug(
-      {
-        fileCount: fileResults.length,
-        queryTokens: Array.from(queryTokens).slice(0, 10),
-      },
-      'FTS 召回开始 chunk 选择',
-    );
+    if (isDebugEnabled()) {
+      logger.debug(
+        {
+          fileCount: fileResults.length,
+          queryTokens: Array.from(queryTokens).slice(0, 10),
+        },
+        'FTS 召回开始 chunk 选择',
+      );
+    }
 
-    // 3. 从 VectorStore 获取每个文件的 chunks，使用 token overlap 打分
+    // 3. 批量获取所有 FTS 命中文件的 chunks（性能优化：N 次查询 → 1 次）
+    const allFilePaths = fileResults.map((r) => r.path);
+    const chunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
+    if (!chunksMap) return [];
+
     const allChunks: ScoredChunk[] = [];
     let totalChunks = 0;
     let skippedFiles = 0;
@@ -293,13 +278,13 @@ export class SearchService {
     for (const { path: filePath, score: fileScore } of fileResults) {
       if (totalChunks >= this.config.lexTotalChunks) break;
 
-      const chunks = await this.vectorStore?.getFileChunks(filePath);
+      const chunks = chunksMap.get(filePath);
       if (!chunks || chunks.length === 0) continue;
 
       // 对每个 chunk 计算 token overlap 得分
       const scoredChunks = chunks.map((chunk) => ({
         chunk,
-        overlapScore: this.scoreChunkTokenOverlap(chunk, queryTokens),
+        overlapScore: scoreChunkTokenOverlap(chunk, queryTokens),
       }));
 
       // 阈值过滤：如果文件内所有 chunk 的 maxOverlap == 0，跳过该文件
@@ -359,36 +344,6 @@ export class SearchService {
   private extractQueryTokens(query: string): Set<string> {
     const tokens = segmentQuery(query);
     return new Set(tokens);
-  }
-
-  /**
-   * 计算 chunk 与查询的 token overlap 得分
-   *
-   * 匹配策略：
-   * - breadcrumb 和 display_code 都参与匹配
-   * - 精确匹配得 1 分，子串匹配得 0.5 分
-   */
-  private scoreChunkTokenOverlap(
-    chunk: { breadcrumb: string; display_code: string },
-    queryTokens: Set<string>,
-  ): number {
-    const text = `${chunk.breadcrumb} ${chunk.display_code}`.toLowerCase();
-    let score = 0;
-
-    for (const token of queryTokens) {
-      // 性能优化：先用 includes 快速判断，再用预编译的 RegExp 判断边界
-      if (text.includes(token)) {
-        // 精确匹配（作为完整单词）得更高分
-        const regex = getTokenBoundaryRegex(token);
-        if (regex.test(text)) {
-          score += 1;
-        } else {
-          score += 0.5; // 子串匹配
-        }
-      }
-    }
-
-    return score;
   }
 
   // =========================================
