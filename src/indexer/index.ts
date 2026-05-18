@@ -475,6 +475,90 @@ export class Indexer {
   }
 
   /**
+   * 垃圾回收：清理 LanceDB 中的孤儿 chunks
+   *
+   * 孤儿来源：
+   * - 事务补偿失败遗留（FTS 回滚成功但 LanceDB 删除失败）
+   * - 跨进程崩溃导致的 hash 不匹配残留
+   * - 删除流程失败遗留
+   *
+   * 算法：以 SQLite files 表 (path, hash) 为权威源，删除 LanceDB 中不存在的组合。
+   * 同步清理 chunks_fts：仅当 path 在 SQLite 完全不存在时才删（hash 变化的 FTS 由 upsert 覆盖）。
+   *
+   * 性能护栏：time budget 默认 5s，超时则跳过避免阻塞扫描主流程。
+   */
+  async gc(
+    db: Database.Database,
+    options: { maxScanMs?: number } = {},
+  ): Promise<{ orphans: number; truncated?: boolean }> {
+    if (!this.vectorStore) {
+      await this.init();
+    }
+
+    const startTime = Date.now();
+    const timeBudget = options.maxScanMs ?? 5000;
+
+    // 1. 拉取 LanceDB 所有 (path, hash) 组合
+    let vectorPairs: Array<{ path: string; hash: string }>;
+    try {
+      vectorPairs = (await this.vectorStore?.listFileHashes()) ?? [];
+    } catch (err) {
+      const error = err as { message?: string };
+      logger.warn({ error: error.message }, 'GC: listFileHashes 失败，跳过');
+      return { orphans: 0 };
+    }
+
+    if (vectorPairs.length === 0) return { orphans: 0 };
+
+    if (Date.now() - startTime > timeBudget) {
+      logger.warn(
+        { elapsed: Date.now() - startTime, budget: timeBudget },
+        'GC 超时（拉取阶段），本次跳过',
+      );
+      return { orphans: 0, truncated: true };
+    }
+
+    // 2. 构建 SQLite 权威集合
+    const sqliteRows = db.prepare('SELECT path, hash FROM files').all() as Array<{
+      path: string;
+      hash: string;
+    }>;
+    const validPairs = new Set(sqliteRows.map((r) => `${r.path} ${r.hash}`));
+    const sqlitePaths = new Set(sqliteRows.map((r) => r.path));
+
+    // 3. 找出孤儿
+    const orphans = vectorPairs.filter((p) => !validPairs.has(`${p.path} ${p.hash}`));
+
+    if (orphans.length === 0) return { orphans: 0 };
+
+    logger.info({ count: orphans.length }, 'GC: 发现孤儿 chunks');
+
+    // 4. 删除 LanceDB 孤儿
+    try {
+      await this.vectorStore?.deleteFilesByHash(orphans);
+    } catch (err) {
+      const error = err as { message?: string };
+      logger.warn({ error: error.message }, 'GC: LanceDB 删除失败，下次重试');
+      return { orphans: 0 };
+    }
+
+    // 5. 同步清理 chunks_fts（仅 path 已从 SQLite 移除的情况）
+    const pathsToFtsClean = Array.from(new Set(orphans.map((o) => o.path))).filter(
+      (p) => !sqlitePaths.has(p),
+    );
+    if (pathsToFtsClean.length > 0 && isChunksFtsInitialized(db)) {
+      try {
+        batchDeleteFileChunksFts(db, pathsToFtsClean);
+      } catch (err) {
+        const error = err as { message?: string };
+        logger.warn({ error: error.message }, 'GC: chunks_fts 清理失败');
+      }
+    }
+
+    return { orphans: orphans.length };
+  }
+
+  /**
    * 获取索引统计
    */
   async getStats(): Promise<{ totalChunks: number }> {
