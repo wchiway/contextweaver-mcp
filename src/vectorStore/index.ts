@@ -233,6 +233,28 @@ export class VectorStore {
   }
 
   /**
+   * 按 (file_path, file_hash) 精确删除 chunks
+   *
+   * 用于事务补偿：当下游写入（如 FTS）失败时，反向删除已 upsert 的新版本，
+   * 保留旧版本不动，确保 vector_index_hash 仍指向旧 hash 时 LanceDB 状态一致。
+   */
+  async deleteFilesByHash(items: Array<{ path: string; hash: string }>): Promise<void> {
+    if (!this.table || items.length === 0) return;
+
+    const BATCH_SIZE = 500;
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+      const batch = items.slice(i, i + BATCH_SIZE);
+      const conditions = batch
+        .map(
+          (it) =>
+            `(file_path = '${this.escapeString(it.path)}' AND file_hash = '${this.escapeString(it.hash)}')`,
+        )
+        .join(' OR ');
+      await this.table.delete(conditions);
+    }
+  }
+
+  /**
    * 批量删除文件（性能优化：单次 DELETE 替代 N 次循环）
    * 当文件数超过 500 时分批处理，防止 LanceDB filter 字符串过长
    */

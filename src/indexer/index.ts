@@ -132,8 +132,17 @@ export class Indexer {
 
     // 处理删除
     if (toDelete.length > 0) {
-      await this.deleteFiles(db, toDelete);
-      stats.deleted = toDelete.length;
+      try {
+        await this.deleteFiles(db, toDelete);
+        stats.deleted = toDelete.length;
+      } catch (err) {
+        const error = err as { message?: string };
+        logger.error(
+          { error: error.message, count: toDelete.length },
+          '删除阶段失败，已标记重试',
+        );
+        stats.errors += toDelete.length;
+      }
     }
 
     // chunks 为空的文件视为已收敛：标记 vector_index_hash=hash
@@ -323,8 +332,13 @@ export class Indexer {
         }
       }
 
-      // ===== 阶段 4: 批量写入 LanceDB =====
+      // ===== 阶段 4-6: 伪事务 (LanceDB → FTS → SQLite mark) =====
+      // 任一阶段失败均执行补偿：
+      // - LanceDB 失败：clearVectorIndexHash，下次重试
+      // - FTS 失败：反向删除 LanceDB 新 hash 的 chunks，保留旧版本，不写 mark
+      // - SQLite mark 失败：LanceDB 与 FTS 已有新版本，下次扫描会因 hash 匹配跳过自愈（可接受）
       if (filesToUpsert.length > 0) {
+        // 阶段 4: LanceDB 写入
         try {
           await this.vectorStore?.batchUpsertFiles(filesToUpsert);
         } catch (err) {
@@ -338,23 +352,45 @@ export class Indexer {
           completedChunks += batchTexts.length;
           continue;
         }
-      }
 
-      // ===== 阶段 5: 批量更新 FTS 索引 =====
-      if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
-        try {
-          const pathsToDelete = filesToUpsert.map((f) => f.path);
-          batchDeleteFileChunksFts(db, pathsToDelete);
-          batchUpsertChunkFts(db, ftsChunks);
-        } catch (err) {
-          const error = err as { message?: string };
-          logger.warn({ error: error.message }, 'FTS 批量更新失败（向量索引已成功）');
+        // 阶段 5: FTS 写入（失败时回滚 LanceDB）
+        if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
+          try {
+            const pathsToDelete = filesToUpsert.map((f) => f.path);
+            batchDeleteFileChunksFts(db, pathsToDelete);
+            batchUpsertChunkFts(db, ftsChunks);
+          } catch (err) {
+            const error = err as { message?: string; stack?: string };
+            logger.error(
+              { error: error.message, stack: error.stack, batch: `${batchNum}/${totalBatches}` },
+              'FTS 写入失败，回滚 LanceDB 新版本',
+            );
+            // 补偿：反向删除本批次刚 upsert 的新 hash 记录
+            try {
+              await this.vectorStore?.deleteFilesByHash(
+                filesToUpsert.map((f) => ({ path: f.path, hash: f.hash })),
+              );
+            } catch (rollbackErr) {
+              const rbError = rollbackErr as { message?: string };
+              logger.error(
+                { error: rbError.message },
+                'LanceDB 回滚失败，孤儿数据将由下次 GC 清理',
+              );
+            }
+            clearVectorIndexHash(
+              db,
+              batchFiles.map((f) => f.path),
+            );
+            totalErrors += batchFiles.length;
+            completedChunks += batchTexts.length;
+            continue;
+          }
         }
-      }
 
-      // ===== 阶段 6: 更新 SQLite 元数据 =====
-      if (successFiles.length > 0) {
-        batchUpdateVectorIndexHash(db, successFiles);
+        // 阶段 6: SQLite 标记收敛
+        if (successFiles.length > 0) {
+          batchUpdateVectorIndexHash(db, successFiles);
+        }
       }
 
       totalSuccess += successFiles.length;
@@ -378,16 +414,33 @@ export class Indexer {
 
   /**
    * 删除文件的向量和 FTS 索引
+   *
+   * 顺序：先删 FTS（SQLite 事务，可靠）→ 再删 LanceDB（可能失败）
+   * 任一阶段失败均通过 clearVectorIndexHash 触发下次扫描自愈
    */
   private async deleteFiles(db: Database.Database, paths: string[]): Promise<void> {
-    if (!this.vectorStore) return;
+    if (!this.vectorStore || paths.length === 0) return;
 
-    // 删除向量索引
-    await this.vectorStore.deleteFiles(paths);
-
-    // 删除 chunk FTS 索引
+    // 1. 先删 FTS（SQLite 事务）
     if (isChunksFtsInitialized(db)) {
-      batchDeleteFileChunksFts(db, paths);
+      try {
+        batchDeleteFileChunksFts(db, paths);
+      } catch (err) {
+        const error = err as { message?: string };
+        logger.error({ error: error.message, paths }, 'FTS 删除失败');
+        clearVectorIndexHash(db, paths);
+        throw err;
+      }
+    }
+
+    // 2. 再删 LanceDB
+    try {
+      await this.vectorStore.deleteFiles(paths);
+    } catch (err) {
+      const error = err as { message?: string };
+      logger.error({ error: error.message, paths }, 'LanceDB 删除失败，孤儿数据将由 GC 清理');
+      clearVectorIndexHash(db, paths);
+      throw err;
     }
 
     logger.debug({ count: paths.length }, '删除文件索引');
