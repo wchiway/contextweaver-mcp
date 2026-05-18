@@ -49,9 +49,16 @@ function detectFtsTokenizer(db: Database.Database): FtsTokenizer {
 // FTS 表初始化
 
 /**
- * 初始化 files_fts 表
+ * 初始化 files_fts 表（外部内容表模式）
  *
- * 创建虚拟表并同步已有文件数据
+ * 使用 content='files' 让 FTS5 仅存倒排索引，正文回 files 表读取，
+ * 消除全文重复存储（v1.1.0 之前是独立内容表，全文存两份）。
+ *
+ * 三个触发器自动维护 FTS 索引：
+ * - files_ai: INSERT 时同步
+ * - files_ad: DELETE 时同步
+ * - files_au: UPDATE 时同步
+ * 所有触发器都有 WHEN content IS NOT NULL 防护，避免 skipped 文件触发空插入。
  */
 export function initFilesFts(db: Database.Database): void {
   const tokenizer = detectFtsTokenizer(db);
@@ -59,50 +66,54 @@ export function initFilesFts(db: Database.Database): void {
   // 检查表是否已存在
   const tableExists = db
     .prepare(`
-        SELECT name FROM sqlite_master 
+        SELECT name FROM sqlite_master
         WHERE type='table' AND name='files_fts'
     `)
     .get();
 
   if (!tableExists) {
-    // 创建 FTS 表
+    // 创建外部内容表
     db.exec(`
             CREATE VIRTUAL TABLE files_fts USING fts5(
                 path,
                 content,
+                content='files',
+                content_rowid='rowid',
                 tokenize='${tokenizer}'
             );
         `);
-    logger.info(`创建 files_fts 表，tokenizer=${tokenizer}`);
-
-    // 同步已有文件数据
-    syncFilesFts(db);
+    logger.info(`创建 files_fts 表（外部内容表），tokenizer=${tokenizer}`);
   }
-}
 
-/**
- * 同步 files 表到 files_fts
- *
- * 检查两表记录数差异，必要时重建索引
- */
-function syncFilesFts(db: Database.Database): void {
-  const fileCount = (
-    db.prepare('SELECT COUNT(*) as c FROM files WHERE content IS NOT NULL').get() as { c: number }
-  ).c;
-  const ftsCount = (db.prepare('SELECT COUNT(*) as c FROM files_fts').get() as { c: number }).c;
+  // 触发器必须每次启动都确保存在（CREATE TRIGGER IF NOT EXISTS）
+  // 因为外部内容表的同步完全依赖触发器，触发器丢失会导致数据不一致
+  db.exec(`
+        CREATE TRIGGER IF NOT EXISTS files_ai
+        AFTER INSERT ON files
+        WHEN new.content IS NOT NULL
+        BEGIN
+            INSERT INTO files_fts(rowid, path, content)
+            VALUES (new.rowid, new.path, new.content);
+        END;
 
-  if (ftsCount < fileCount) {
-    logger.info(`同步 FTS 索引: files=${fileCount}, fts=${ftsCount}`);
+        CREATE TRIGGER IF NOT EXISTS files_ad
+        AFTER DELETE ON files
+        WHEN old.content IS NOT NULL
+        BEGIN
+            INSERT INTO files_fts(files_fts, rowid, path, content)
+            VALUES('delete', old.rowid, old.path, old.content);
+        END;
 
-    // 重建 FTS 索引
-    db.exec(`
-            DELETE FROM files_fts;
-            INSERT INTO files_fts(path, content) 
-            SELECT path, content FROM files WHERE content IS NOT NULL;
-        `);
-
-    logger.info(`FTS 索引同步完成: ${fileCount} 条记录`);
-  }
+        CREATE TRIGGER IF NOT EXISTS files_au
+        AFTER UPDATE ON files
+        WHEN old.content IS NOT NULL OR new.content IS NOT NULL
+        BEGIN
+            INSERT INTO files_fts(files_fts, rowid, path, content)
+            SELECT 'delete', old.rowid, old.path, old.content WHERE old.content IS NOT NULL;
+            INSERT INTO files_fts(rowid, path, content)
+            SELECT new.rowid, new.path, new.content WHERE new.content IS NOT NULL;
+        END;
+    `);
 }
 
 // Chunk 级 FTS（chunks_fts）
@@ -307,37 +318,11 @@ export function searchChunksFts(
 }
 
 /**
- * 批量更新 FTS 索引
+ * NOTE: batchUpsertFileFts / batchDeleteFileFts 已废弃
+ *
+ * files_fts 改为外部内容表后，所有同步通过 files_ai/ad/au 触发器自动完成。
+ * 调用方对 files 表的 INSERT/UPDATE/DELETE 即可，无需显式维护 FTS。
  */
-export function batchUpsertFileFts(
-  db: Database.Database,
-  files: Array<{ path: string; content: string }>,
-): void {
-  const deleteFts = db.prepare('DELETE FROM files_fts WHERE path = ?');
-  const insertFts = db.prepare('INSERT INTO files_fts(path, content) VALUES (?, ?)');
-
-  const transaction = db.transaction((items: Array<{ path: string; content: string }>) => {
-    for (const item of items) {
-      deleteFts.run(item.path);
-      insertFts.run(item.path, item.content);
-    }
-  });
-
-  transaction(files);
-}
-
-/**
- * 批量删除 FTS 索引记录
- */
-export function batchDeleteFileFts(db: Database.Database, paths: string[]): void {
-  const stmt = db.prepare('DELETE FROM files_fts WHERE path = ?');
-  const transaction = db.transaction((items: string[]) => {
-    for (const path of items) {
-      stmt.run(path);
-    }
-  });
-  transaction(paths);
-}
 
 // FTS 搜索接口
 
