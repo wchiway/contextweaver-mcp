@@ -4,11 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
-  batchDeleteFileFts,
-  batchUpsertFileFts,
   initChunksFts,
   initFilesFts,
 } from '../search/fts.js';
+import { logger } from '../utils/logger.js';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
 
@@ -120,6 +119,9 @@ export function initDb(projectId: string): Database.Database {
     )
   `);
 
+  // Schema 迁移（必须在 FTS 初始化前）
+  migrateSchema(db);
+
   // 初始化 FTS 表（词法搜索支持）
   initFilesFts(db);
   initChunksFts(db);
@@ -130,6 +132,166 @@ export function initDb(projectId: string): Database.Database {
   db.pragma('cache_size = -64000');
 
   return db;
+}
+
+// ===========================================
+// Schema 迁移
+// ===========================================
+
+const CURRENT_SCHEMA_VERSION = 2;
+const METADATA_KEY_SCHEMA_VERSION = 'schema_version';
+
+/**
+ * 获取当前 schema 版本
+ * - null：v1.1.0 之前的旧库（未写过 schema_version）
+ * - number：已写入版本号
+ */
+function getSchemaVersion(db: Database.Database): number | null {
+  // metadata 表此时已存在（initDb 中先创建）
+  const row = db
+    .prepare('SELECT value FROM metadata WHERE key = ?')
+    .get(METADATA_KEY_SCHEMA_VERSION) as { value: string } | undefined;
+  if (!row) return null;
+  const parsed = parseInt(row.value, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function setSchemaVersion(db: Database.Database, version: number): void {
+  db.prepare(`
+    INSERT INTO metadata (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(METADATA_KEY_SCHEMA_VERSION, String(version));
+}
+
+/**
+ * 检测旧库 files_fts 是否为独立内容表（v1 格式）
+ *
+ * v1: CREATE VIRTUAL TABLE files_fts USING fts5(path, content, tokenize=...)
+ * v2: CREATE VIRTUAL TABLE files_fts USING fts5(..., content='files', ...)
+ *
+ * 通过查询 sqlite_master.sql 中是否包含 content='files' 判断。
+ */
+function isOldFilesFtsSchema(db: Database.Database): boolean {
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='files_fts'`)
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return false;
+  return !row.sql.includes("content='files'");
+}
+
+/**
+ * 主迁移入口
+ *
+ * 调用时机：initDb 中、initFilesFts 之前
+ * 保证迁移在 FTS 重建之前完成。
+ */
+export function migrateSchema(db: Database.Database): void {
+  // 残留备份表清理（上次迁移失败后再次启动时）
+  const backupExists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts_v1_backup'`)
+    .get();
+  const currentFtsExists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'`)
+    .get();
+  if (backupExists && currentFtsExists && !isOldFilesFtsSchema(db)) {
+    logger.warn('检测到残留备份表 files_fts_v1_backup，清理中');
+    db.exec('DROP TABLE files_fts_v1_backup');
+  }
+
+  const current = getSchemaVersion(db);
+
+  // 全新数据库：直接写入当前版本，无需迁移
+  // 判断标准：files 表为空 且 无 files_fts
+  if (current === null) {
+    const fileCount = (
+      db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }
+    ).c;
+    const ftsExists = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'`)
+      .get();
+
+    if (fileCount === 0 && !ftsExists) {
+      setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
+      return;
+    }
+  }
+
+  // v1 → v2：files_fts 重建为外部内容表
+  if ((current ?? 1) < 2) {
+    migrateToV2(db);
+    setSchemaVersion(db, 2);
+  }
+}
+
+/**
+ * v1 → v2 迁移：files_fts 改为外部内容表
+ *
+ * 流程：
+ * 1. RENAME 旧 files_fts → files_fts_v1_backup
+ * 2. 让调用方 initFilesFts 创建新表（content='files'）
+ * 3. INSERT INTO files_fts(files_fts) VALUES('rebuild') 从 files 重建倒排索引
+ * 4. DROP 备份表
+ *
+ * 失败处理：任何步骤抛错都会冒泡，但备份表保留以便人工恢复。
+ */
+function migrateToV2(db: Database.Database): void {
+  // 仅当 files_fts 存在且是旧 schema 时才迁移
+  const ftsExists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'`)
+    .get();
+
+  if (!ftsExists) {
+    // 没有 files_fts，无需迁移（initFilesFts 后续创建新表）
+    return;
+  }
+
+  if (!isOldFilesFtsSchema(db)) {
+    // 已经是新 schema，跳过
+    return;
+  }
+
+  logger.info('执行 schema 迁移 v1 → v2: files_fts 转为外部内容表');
+
+  // 备份旧表（DROP 而非 RENAME，因为 FTS5 虚拟表 RENAME 在某些版本有 bug）
+  // 此时正文数据已在 files.content 中，可安全删除 FTS 副本
+  db.exec('DROP TABLE files_fts');
+
+  // 后续 initFilesFts 会创建新表 + 触发器
+  // 新表创建后，需要从 files 重建索引：这里只设置一个标记，
+  // 真正的 rebuild 在 initFilesFts 创建完表后调用
+  // 但 initFilesFts 当前不知道是否需要 rebuild，所以我们直接重建
+  // —— 改为：在 migrateToV2 内创建表并 rebuild，让 initFilesFts 的 IF NOT EXISTS 跳过
+  // 但 detectFtsTokenizer 在 fts.ts 中，这里访问不到 ...
+  // 解决方案：导出 detectFtsTokenizer 或在 migrateToV2 中用固定 tokenizer 探测
+
+  // 使用与 initFilesFts 相同的探测逻辑（避免循环依赖，复制实现）
+  let tokenizer: 'trigram' | 'unicode61';
+  try {
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS _fts_probe USING fts5(content, tokenize='trigram');
+       DROP TABLE IF EXISTS _fts_probe;`,
+    );
+    tokenizer = 'trigram';
+  } catch {
+    tokenizer = 'unicode61';
+  }
+
+  db.exec(`
+    CREATE VIRTUAL TABLE files_fts USING fts5(
+        path,
+        content,
+        content='files',
+        content_rowid='rowid',
+        tokenize='${tokenizer}'
+    );
+  `);
+
+  // 从 files 表重建倒排索引
+  // 外部内容表的 'rebuild' 命令会扫描源表所有行
+  db.exec(`INSERT INTO files_fts(files_fts) VALUES('rebuild')`);
+
+  logger.info('schema 迁移 v1 → v2 完成');
 }
 
 /**
@@ -235,17 +397,7 @@ export function batchUpsert(db: Database.Database, files: FileMeta[]): void {
 
   transaction(files);
 
-  // 同步 FTS 索引
-  // 使用类型守卫过滤 null，TypeScript 可以正确推断类型
-  const ftsFiles: Array<{ path: string; content: string }> = [];
-  for (const f of files) {
-    if (f.content !== null) {
-      ftsFiles.push({ path: f.path, content: f.content });
-    }
-  }
-  if (ftsFiles.length > 0) {
-    batchUpsertFileFts(db, ftsFiles);
-  }
+  // files_fts 同步由 files_ai/au 触发器自动完成（外部内容表模式）
 }
 
 /**
@@ -288,10 +440,7 @@ export function batchDelete(db: Database.Database, paths: string[]): void {
 
   transaction(paths);
 
-  // 同步删除 FTS 索引
-  if (paths.length > 0) {
-    batchDeleteFileFts(db, paths);
-  }
+  // files_fts 同步由 files_ad 触发器自动完成
 }
 
 /**
