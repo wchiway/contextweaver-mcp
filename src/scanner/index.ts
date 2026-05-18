@@ -280,6 +280,23 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     // 报告完成
     options.onProgress?.(100, 100, '索引完成');
 
+    // GC：清理孤儿 chunks（失败不影响主流程）
+    if (options.vectorIndex !== false) {
+      try {
+        const embeddingConfig = getEmbeddingConfig();
+        const indexer = await getIndexer(projectId, embeddingConfig.dimensions);
+        const gcResult = await indexer.gc(db);
+        if (gcResult.orphans > 0) {
+          logger.info({ orphans: gcResult.orphans }, 'GC 完成');
+        } else if (gcResult.truncated) {
+          logger.debug('GC 超时跳过，下次扫描重试');
+        }
+      } catch (err) {
+        const error = err as { message?: string };
+        logger.warn({ error: error.message }, 'GC 跳过');
+      }
+    }
+
     // 索引完成后使 GraphExpander 缓存失效，确保后续搜索使用最新文件列表
     invalidateAllExpanderCaches();
 
