@@ -1,8 +1,9 @@
 /**
- * sampleCheckDisplayCode 测试（C2 迁移）
+ * sampleCheckDisplayCode 测试（C2 迁移 + CRIT-A 修复）
  *
- * 抽样校验：display_code 与 files.content.slice(raw_start, raw_end) 一致性。
- * 用于 LanceDB schema 迁移前的安全门。
+ * 抽样校验：display_code 与 files.content.slice(start_index, end_index) 一致性。
+ * 注意：CRIT-A 之前用 raw_start/raw_end 切片是错误的（含前置 gap），
+ * 现已改为用 start_index/end_index（与 SemanticSplitter 中 displayCode 同源）。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -11,27 +12,31 @@ import {
   sampleCheckDisplayCode,
 } from '../../src/vectorStore/index.js';
 
+/** 构造测试行：默认 start_index = raw_start，模拟首个 chunk 无 gap 场景 */
 function makeRow(
   path: string,
-  raw_start: number,
-  raw_end: number,
+  start_index: number,
+  end_index: number,
   display_code: string,
+  rawSpan?: { start: number; end: number },
 ): OldChunkRecord {
+  const raw_start = rawSpan?.start ?? start_index;
+  const raw_end = rawSpan?.end ?? end_index;
   return {
-    chunk_id: `${path}#h#${raw_start}`,
+    chunk_id: `${path}#h#${start_index}`,
     file_path: path,
     file_hash: 'h',
-    chunk_index: raw_start,
+    chunk_index: start_index,
     vector: [],
     display_code,
     language: 'typescript',
     breadcrumb: 'x',
-    start_index: raw_start,
-    end_index: raw_end,
+    start_index,
+    end_index,
     raw_start,
     raw_end,
-    vec_start: raw_start,
-    vec_end: raw_end,
+    vec_start: start_index,
+    vec_end: end_index,
   };
 }
 
@@ -137,9 +142,38 @@ describe('sampleCheckDisplayCode (C2 迁移抽样校验)', () => {
     expect(result.mismatched).toBe(0);
   });
 
-  it('[S8] raw_end 越界 → 按 length 截断校验', () => {
+  it('[S8] end_index 越界 → 按 length 截断校验', () => {
     const rows = [makeRow('a.ts', 0, 999, 'abc')]; // content 只有 "abc"
     const result = sampleCheckDisplayCode(rows, () => 'abc');
     expect(result.mismatched).toBe(0); // slice(0, 999) on "abc" 仍是 "abc"
+  });
+
+  it('[S9] CRIT-A 关键场景：raw_start ≠ start_index（含 gap）→ 用 start_index 校验通过', () => {
+    // 模拟 SemanticSplitter 真实产物：
+    // 文件内容: "hello\n   world"
+    // chunk0: start=[0,5) "hello"，rawSpan=[0,5)
+    // chunk1: start=[9,14) "world"，rawSpan=[5,14) 含前置 gap "\n   "
+    const content = 'hello\n   world';
+    const rows = [
+      makeRow('a.ts', 0, 5, 'hello', { start: 0, end: 5 }),
+      makeRow('a.ts', 9, 14, 'world', { start: 5, end: 14 }), // raw_start=5 ≠ start_index=9
+    ];
+    const result = sampleCheckDisplayCode(rows, () => content);
+
+    expect(result.sampled).toBe(2);
+    expect(result.mismatched).toBe(0); // 修复前用 raw_start 会得到 "\n   w"，必然 mismatch
+    expect(result.abort).toBe(false);
+  });
+
+  it('[S10] CRIT-A 反例：start_index 错误（指向 gap）→ 应 abort', () => {
+    // 故意把 start_index 设错（指向 raw_start），display_code 与切片不符
+    const content = 'hello\n   world';
+    const rows = [
+      makeRow('a.ts', 5, 14, 'world', { start: 5, end: 14 }), // start_index=5 错误，正确应是 9
+    ];
+    const result = sampleCheckDisplayCode(rows, () => content, { maxMismatchRatio: 0 });
+
+    expect(result.mismatched).toBe(1);
+    expect(result.abort).toBe(true); // 阈值 0 时 1/1 > 0 触发
   });
 });

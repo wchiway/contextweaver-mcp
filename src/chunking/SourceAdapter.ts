@@ -133,6 +133,20 @@ export class SourceAdapter {
   /**
    * 将字节偏移转换为字符偏移
    */
+  /**
+   * 将 tree-sitter 返回的偏移（可能是 UTF-8 字节或 UTF-16 字符域）
+   * 标准化为 UTF-16 字符域偏移。下游 String.prototype.slice 直接可用。
+   *
+   * 导出供 SemanticSplitter 在生成 ChunkMetadata 时统一域。
+   */
+  public toCharOffset(offset: number): number {
+    if (this.domain === 'utf16' || this.domain === 'unknown') return offset;
+    return this.byteToChar(offset);
+  }
+
+  /**
+   * 将字节偏移转换为字符偏移（仅 utf8 域有效；utf16/unknown 直接返回原值）
+   */
   private byteToChar(byteOffset: number): number {
     if (!this.byteToCharMap) return byteOffset;
 

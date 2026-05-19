@@ -296,15 +296,16 @@ export class SearchService {
     if (!chunksMap) return [];
 
     // 批量加载所有 chunk 的正文（C2：不再依赖 LanceDB display_code）
-    const allChunkSlices: Array<{ filePath: string; raw_start: number; raw_end: number }> = [];
+    // 使用 start_index/end_index 切片（CRIT-A：与 displayCode 同源；UTF-16 字符域）
+    const allChunkSlices: Array<{ filePath: string; start_index: number; end_index: number }> = [];
     for (const filePath of allFilePaths) {
       const chunks = chunksMap.get(filePath);
       if (!chunks) continue;
       for (const c of chunks) {
         allChunkSlices.push({
           filePath: c.file_path,
-          raw_start: c.raw_start,
-          raw_end: c.raw_end,
+          start_index: c.start_index,
+          end_index: c.end_index,
         });
       }
     }
@@ -326,8 +327,8 @@ export class SearchService {
         const code = codeMap.get(
           ChunkContentLoader.key({
             filePath: chunk.file_path,
-            raw_start: chunk.raw_start,
-            raw_end: chunk.raw_end,
+            start_index: chunk.start_index,
+            end_index: chunk.end_index,
           }),
         ) ?? '';
         return {
@@ -507,12 +508,13 @@ export class SearchService {
     const queryTokens = this.extractQueryTokens(query);
 
     // 批量从 files.content 加载 chunk 正文（C2 修复：不再依赖 LanceDB display_code）
+    // 使用 start_index/end_index 切片（CRIT-A：与 displayCode 同源）
     const loader = new ChunkContentLoader(this.db as Database.Database);
     const codeMap = loader.loadMany(
       candidates.map((c) => ({
         filePath: c.filePath,
-        raw_start: c.record.raw_start,
-        raw_end: c.record.raw_end,
+        start_index: c.record.start_index,
+        end_index: c.record.end_index,
       })),
     );
 
@@ -521,8 +523,8 @@ export class SearchService {
       const bc = this.truncateMiddle(chunk.record.breadcrumb, this.config.maxBreadcrumbChars);
       const key = ChunkContentLoader.key({
         filePath: chunk.filePath,
-        raw_start: chunk.record.raw_start,
-        raw_end: chunk.record.raw_end,
+        start_index: chunk.record.start_index,
+        end_index: chunk.record.end_index,
       });
       // codeMap 未命中（path 已被删除或越界） → 空字符串，让 rerank 仅看 breadcrumb
       const code = codeMap.get(key) ?? '';
