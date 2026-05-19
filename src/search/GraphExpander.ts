@@ -409,6 +409,23 @@ export class GraphExpander {
     const importChunksMap = await this.vectorStore?.getFilesChunks(Array.from(allTargetPaths));
     if (!importChunksMap) return result;
 
+    // M3: 共享 ChunkContentLoader，一次性按所有 import target 的 chunks 预加载
+    // 之前每个 import target 调 selectImportChunks 会创建新 loader，丢失跨文件批量优势
+    const sharedLoader = new ChunkContentLoader(this.db as Database.Database);
+    const allSlices: Array<{ filePath: string; start_index: number; end_index: number }> = [];
+    if (queryTokens && queryTokens.size > 0) {
+      for (const chunks of importChunksMap.values()) {
+        for (const c of chunks) {
+          allSlices.push({
+            filePath: c.file_path,
+            start_index: c.start_index,
+            end_index: c.end_index,
+          });
+        }
+      }
+    }
+    const sharedCodeMap = sharedLoader.loadMany(allSlices);
+
     // Phase 3: 使用批量结果构建扩展 chunks（按 key 去重取 max score）
     const bestByKey = new Map<string, ScoredChunk>();
 
@@ -420,6 +437,7 @@ export class GraphExpander {
         importChunks,
         chunksPerImportFile,
         queryTokens,
+        sharedCodeMap,
       );
       const depthDecay = depth === 0 ? 1 : decayDepth;
 
@@ -490,6 +508,7 @@ export class GraphExpander {
     chunks: ChunkRecord[],
     limit: number,
     queryTokens?: Set<string>,
+    sharedCodeMap?: Map<string, string>,
   ): ChunkRecord[] {
     if (limit <= 0) return [];
 
@@ -498,25 +517,31 @@ export class GraphExpander {
       return sortedByIndex.slice(0, limit);
     }
 
-    // 批量从 files.content 切片（C2：不再依赖 LanceDB display_code）
-    // 使用 start_index/end_index 切片（CRIT-A：与 displayCode 同源）
-    const loader = new ChunkContentLoader(this.db as Database.Database);
-    const codeMap = loader.loadMany(
-      sortedByIndex.map((c) => ({
-        filePath: c.file_path,
-        start_index: c.start_index,
-        end_index: c.end_index,
-      })),
-    );
+    // M3: 优先使用调用方预加载的 codeMap（跨 import target 共享）
+    // 若未提供则降级为本地构造（保留独立调用语义）
+    let codeMap: Map<string, string>;
+    if (sharedCodeMap) {
+      codeMap = sharedCodeMap;
+    } else {
+      const loader = new ChunkContentLoader(this.db as Database.Database);
+      codeMap = loader.loadMany(
+        sortedByIndex.map((c) => ({
+          filePath: c.file_path,
+          start_index: c.start_index,
+          end_index: c.end_index,
+        })),
+      );
+    }
 
     const scored = sortedByIndex.map((chunk) => {
-      const code = codeMap.get(
-        ChunkContentLoader.key({
-          filePath: chunk.file_path,
-          start_index: chunk.start_index,
-          end_index: chunk.end_index,
-        }),
-      ) ?? '';
+      const code =
+        codeMap.get(
+          ChunkContentLoader.key({
+            filePath: chunk.file_path,
+            start_index: chunk.start_index,
+            end_index: chunk.end_index,
+          }),
+        ) ?? '';
       return {
         chunk,
         score: scoreChunkTokenOverlap(chunk, code, queryTokens),
