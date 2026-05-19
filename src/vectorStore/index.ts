@@ -119,9 +119,9 @@ export class VectorStore {
   private dbPath: string;
   private vectorDim: number;
 
-  constructor(projectId: string, vectorDim = 1024) {
+  constructor(projectId: string, vectorDim = 1024, dbPathOverride?: string) {
     this.projectId = projectId;
-    this.dbPath = path.join(BASE_DIR, projectId, 'vectors.lance');
+    this.dbPath = dbPathOverride ?? path.join(BASE_DIR, projectId, 'vectors.lance');
     this.vectorDim = vectorDim;
   }
 
@@ -131,10 +131,10 @@ export class VectorStore {
   async init(): Promise<void> {
     if (this.db) return;
 
-    // 确保目录存在
-    const projectDir = path.join(BASE_DIR, this.projectId);
-    if (!fs.existsSync(projectDir)) {
-      fs.mkdirSync(projectDir, { recursive: true });
+    // 确保 dbPath 父目录存在（支持测试场景注入自定义 dbPath）
+    const parent = path.dirname(this.dbPath);
+    if (!fs.existsSync(parent)) {
+      fs.mkdirSync(parent, { recursive: true });
     }
 
     this.db = await lancedb.connect(this.dbPath);

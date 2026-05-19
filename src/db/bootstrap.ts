@@ -192,12 +192,14 @@ export async function migrateRemoveDisplayCode(
     }
 
     // 构造新 schema
+    // 注意：LanceDB query 返回的 vector 可能是特殊 Vector 类型而非 plain array，
+    // 直接传给 createTable 会触发 type inference 错误。这里强制转为 Array。
     const newRows = oldRows.map((r: OldChunkRecord) => ({
       chunk_id: r.chunk_id,
       file_path: r.file_path,
       file_hash: r.file_hash,
       chunk_index: r.chunk_index,
-      vector: r.vector,
+      vector: Array.from(r.vector as unknown as ArrayLike<number>),
       language: r.language,
       breadcrumb: r.breadcrumb,
       start_index: r.start_index,
