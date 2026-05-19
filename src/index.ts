@@ -191,5 +191,50 @@ cli
     },
   );
 
+cli
+  .command('migrate', 'LanceDB 迁移管理（CRIT-B/CRIT-C）')
+  .option('--reset', '清空 LanceDB chunks 表并重置迁移状态（用于解除 aborted）')
+  .option('-p, --path <path>', '项目路径（默认当前目录）')
+  .action(async (options: { reset?: boolean; path?: string }) => {
+    const rootPath = options.path ? path.resolve(options.path) : process.cwd();
+    const projectId = generateProjectId(rootPath);
+
+    const { initDb, getLanceDbMigrationState, setLanceDbMigrationState, clearAllVectorIndexHash } =
+      await import('./db/index.js');
+    const db = initDb(projectId);
+
+    const state = getLanceDbMigrationState(db);
+    logger.info({ projectId, state }, '当前 LanceDB 迁移状态');
+
+    if (!options.reset) {
+      logger.info('如需解除 aborted 状态，使用 --reset 选项');
+      db.close();
+      return;
+    }
+
+    if (state !== 'aborted' && state !== 'pending') {
+      logger.info(`状态为 ${state ?? '未设置'}，无需 reset`);
+      db.close();
+      return;
+    }
+
+    // 1. 清空 LanceDB chunks 表
+    const { getVectorStore } = await import('./vectorStore/index.js');
+    const { getEmbeddingConfig } = await import('./config.js');
+    const store = await getVectorStore(projectId, getEmbeddingConfig().dimensions);
+    await store.clear();
+    logger.info('LanceDB chunks 表已清空');
+
+    // 2. 清空所有 vector_index_hash，让自愈机制全量重建
+    const cleared = clearAllVectorIndexHash(db);
+    logger.info({ cleared }, 'vector_index_hash 已清空');
+
+    // 3. 重置迁移状态为 done（新表会用新 schema）
+    setLanceDbMigrationState(db, 'done');
+    logger.info('迁移状态已重置为 done。请重新运行 `contextweaver index` 重建索引。');
+
+    db.close();
+  });
+
 cli.help();
 cli.parse();
