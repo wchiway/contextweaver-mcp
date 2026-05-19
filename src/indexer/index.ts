@@ -424,13 +424,12 @@ export class Indexer {
 
         // 阶段 5: FTS + outbox 写入（单事务，失败时回滚 LanceDB）
         //
+        // batchUpsertChunkFts 自带 per-file 整体清理（C3 修复），无需前置 delete。
         // outbox 用途：FTS 已写但 stage6 mark 阶段失败时，启动时 replayPendingMarks
         // 重放，避免下次扫描重复 embedding（C1 修复）。
         if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
           try {
-            const pathsToDelete = filesToUpsert.map((f) => f.path);
             const ftsAndOutboxTx = db.transaction(() => {
-              batchDeleteFileChunksFts(db, pathsToDelete);
               batchUpsertChunkFts(db, ftsChunks);
               insertPendingMarks(db, successFiles);
             });
