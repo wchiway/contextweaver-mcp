@@ -387,6 +387,20 @@ export class VectorStore {
         continue;
       }
 
+      // H4 修复：预删除 (path, newHash) 组合
+      //
+      // 场景：上次崩溃后 LanceDB 残留同 (path, newHash) 的孤儿（如 FTS 回滚成功但
+      // LanceDB 删除失败的边界情况）。LanceDB 无 PK，直接 add 会让 chunk_id 重复，
+      // 导致向量搜索返回重复行。
+      //
+      // 策略：先按 (path, newHash) 精确删除（覆盖孤儿），再 add 新数据，
+      // 最后按 path AND != newHash 清理任何更旧的版本（兜底）。
+      if (this.table && batch.length > 0) {
+        await this.deleteFilesByHash(
+          batch.map((f) => ({ path: f.path, hash: f.hash })),
+        );
+      }
+
       // 1. 批量插入本批次的 records
       if (!this.table) {
         await this.ensureTable(batchRecords);
@@ -394,7 +408,7 @@ export class VectorStore {
         await this.table.add(batchRecords as unknown as Record<string, unknown>[]);
       }
 
-      // 2. 批量删除本批次的旧版本
+      // 2. 批量删除本批次的旧版本（hash != newHash）
       if (this.table && batch.length > 0) {
         const deleteConditions = batch
           .map(
