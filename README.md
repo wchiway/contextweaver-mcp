@@ -24,10 +24,11 @@
 - **RRF 融合 (Reciprocal Rank Fusion)**：智能融合多路召回结果
 
 ### 🧠 AST 语义分片
-- **Tree-sitter 解析**：支持 TypeScript、JavaScript、Python、Go、Java、Rust 六大语言
+- **Tree-sitter 解析**：支持 TypeScript、JavaScript、Python、Go、Java、Rust、C、C++、C# 等语言
 - **Dual-Text 策略**：`displayCode` 用于展示，`vectorText` 用于 Embedding
 - **Gap-Aware 合并**：智能处理代码间隙，保持语义完整性
 - **Breadcrumb 注入**：向量文本包含层级路径，提升检索召回率
+- **UTF-16 字符域归一**：在写入 metadata 前用 `SourceAdapter.toCharOffset` 统一偏移，避免多字节字符切片错位（v1.4.0+）
 
 ### 📊 三阶段上下文扩展
 - **E1 邻居扩展**：同文件前后相邻 chunks，保证代码块完整性
@@ -44,6 +45,13 @@
 - **意图与术语分离**：LLM 友好的 API 设计
 - **自动索引**：首次查询自动触发索引，增量更新透明无感
 
+### 🛡️ Crash-Safe 数据架构 (v1.4.0+)
+- **正文唯一源**：LanceDB 仅存向量与定位元数据，正文回查 `files.content`，索引体积降低 30-50%
+- **跨库事务补偿**：LanceDB → FTS+outbox → SQLite mark 三阶段写入，任一失败自动回滚或重放
+- **迁移状态机**：`pending/done/aborted` 三态持久化，崩溃恢复自动重建
+- **跨进程互斥**：advisory lock 防止 MCP server 与 CLI 并发触发 LanceDB 迁移
+- **chunk_id 去重**：写入前预删除，防止 retry 场景产生重复行
+
 ## 📦 快速开始
 
 ### 环境要求
@@ -55,10 +63,10 @@
 
 ```bash
 # 全局安装
-npm install -g @hsingjui/contextweaver
+npm install -g @chiway/contextweaver
 
 # 或使用 pnpm
-pnpm add -g @hsingjui/contextweaver
+pnpm add -g @chiway/contextweaver
 ```
 
 ### 初始化配置
@@ -118,6 +126,20 @@ cw search --information-request "数据库连接逻辑" --technical-terms "Datab
 ```bash
 # 启动 MCP 服务端（供 Claude 等 AI 助手使用）
 contextweaver mcp
+```
+
+### 索引管理 (v1.4.0+)
+
+```bash
+# 查看 LanceDB 迁移状态
+contextweaver migrate
+
+# 解除 aborted 状态：清空 LanceDB 并触发全量重建
+# 触发时机：抽样校验失败后 Indexer 拒绝写入；运行此命令后再次 index 即可
+contextweaver migrate --reset
+
+# 指定项目路径
+contextweaver migrate --path /path/to/project
 ```
 
 ## 🔧 MCP 集成配置
@@ -201,55 +223,93 @@ flowchart TB
 | **SearchService** | 混合搜索核心，协调向量/词法召回、RRF 融合、Rerank 精排 |
 | **GraphExpander** | 上下文扩展器，执行 E1/E2/E3 三阶段扩展策略 |
 | **ContextPacker** | 上下文打包器，负责段落合并和 Token 预算控制 |
-| **VectorStore** | LanceDB 适配层，管理向量索引的增删改查 |
-| **SQLite (FTS5)** | 元数据存储 + 全文搜索索引 |
-| **SemanticSplitter** | AST 语义分片器，基于 Tree-sitter 解析 |
+| **ChunkContentLoader** | 按 `(path, start_index, end_index)` 从 `files.content` 批量切片（v1.4.0+） |
+| **VectorStore** | LanceDB 适配层，仅暴露纯 vector 操作 |
+| **Database (SQLite)** | 元数据存储 + FTS5 全文索引，schema_version=3 |
+| **Bootstrap** | 跨库初始化协调器：pending_marks 重放 + LanceDB schema 迁移（v1.4.0+） |
+| **SemanticSplitter** | AST 语义分片器，基于 Tree-sitter 解析，写入时统一到 UTF-16 字符域 |
+
+### 数据架构 (v1.4.0+)
+
+```
+~/.contextweaver/<projectId>/
+├── index.db                 # SQLite
+│   ├── files                # 文件元数据 + 完整正文（content 列，文本切片唯一来源）
+│   ├── files_fts            # 外部内容表，倒排索引指向 files
+│   ├── chunks_fts           # chunk 级倒排索引，per-file 整体替换
+│   ├── metadata             # schema_version / lancedb_migration_state / lock
+│   └── pending_marks        # outbox：vector_index_hash 标记失败时启动重放
+└── vectors.lance/           # LanceDB chunks 表（仅向量 + 定位元数据，不存正文）
+```
+
+**关键不变量**：
+- 正文唯一源是 `files.content`；`ChunkContentLoader` 用 `start_index/end_index` 切片（与 `displayCode` 同源）
+- 所有 LanceDB 偏移字段都在 UTF-16 字符域，多字节文件不会切错
+- 跨库写入顺序：LanceDB → (FTS + outbox 单事务) → SQLite mark + 清 outbox
+- LanceDB 迁移状态 `pending/done/aborted` 持久化，跨进程用 advisory lock 互斥
 
 ## 📁 项目结构
 
 ```
 contextweaver/
 ├── src/
-│   ├── index.ts              # CLI 入口
+│   ├── index.ts              # CLI 入口（init / index / search / mcp / migrate）
 │   ├── config.ts             # 配置管理（环境变量）
 │   ├── api/                  # 外部 API 封装
-│   │   ├── embed.ts          # Embedding API
-│   │   └── rerank.ts         # Reranker API
+│   │   ├── embedding.ts      # Embedding API
+│   │   └── reranker.ts       # Reranker API
 │   ├── chunking/             # 语义分片
 │   │   ├── SemanticSplitter.ts   # AST 语义分片器
-│   │   ├── SourceAdapter.ts      # 源码适配器
+│   │   ├── SourceAdapter.ts      # 源码适配器（UTF-16/UTF-8 域归一）
 │   │   ├── LanguageSpec.ts       # 语言规范定义
-│   │   └── ParserPool.ts         # Tree-sitter 解析器池
+│   │   ├── ParserPool.ts         # Tree-sitter 解析器池
+│   │   └── types.ts              # 分片类型定义
 │   ├── scanner/              # 文件扫描
 │   │   ├── crawler.ts        # 文件系统遍历
 │   │   ├── processor.ts      # 文件处理
-│   │   └── filter.ts         # 过滤规则
+│   │   ├── filter.ts         # 过滤规则
+│   │   ├── hash.ts           # 文件 hash
+│   │   └── language.ts       # 语言识别
 │   ├── indexer/              # 索引器
-│   │   └── index.ts          # 批量索引逻辑
+│   │   └── index.ts          # 三阶段事务（LanceDB → FTS+outbox → SQLite mark）
 │   ├── vectorStore/          # 向量存储
-│   │   └── index.ts          # LanceDB 适配层
+│   │   └── index.ts          # LanceDB 适配层（纯 vector 操作）
 │   ├── db/                   # 数据库
-│   │   └── index.ts          # SQLite + FTS5
+│   │   ├── index.ts          # SQLite + FTS5 + pending_marks + 迁移状态机
+│   │   └── bootstrap.ts      # 跨库初始化协调（v1.4.0+）
 │   ├── search/               # 搜索服务
-│   │   ├── SearchService.ts  # 核心搜索服务
-│   │   ├── GraphExpander.ts  # 上下文扩展器
-│   │   ├── ContextPacker.ts  # 上下文打包器
-│   │   ├── fts.ts            # 全文搜索
-│   │   ├── config.ts         # 搜索配置
-│   │   ├── types.ts          # 类型定义
-│   │   └── resolvers/        # 多语言 Import 解析器
+│   │   ├── SearchService.ts      # 核心搜索服务
+│   │   ├── GraphExpander.ts      # 上下文扩展器
+│   │   ├── ContextPacker.ts      # 上下文打包器
+│   │   ├── ChunkContentLoader.ts # 按 (path, start_index, end_index) 切片（v1.4.0+）
+│   │   ├── fts.ts                # 全文搜索（per-file 整体替换）
+│   │   ├── config.ts             # 搜索配置
+│   │   ├── types.ts              # 类型定义
+│   │   ├── utils.ts              # token overlap 评分
+│   │   └── resolvers/            # 多语言 Import 解析器
 │   │       ├── JsTsResolver.ts
 │   │       ├── PythonResolver.ts
 │   │       ├── GoResolver.ts
 │   │       ├── JavaResolver.ts
-│   │       └── RustResolver.ts
+│   │       ├── RustResolver.ts
+│   │       ├── CppResolver.ts
+│   │       └── CSharpResolver.ts
 │   ├── mcp/                  # MCP 服务端
 │   │   ├── server.ts         # MCP 服务器实现
 │   │   ├── main.ts           # MCP 入口
 │   │   └── tools/
 │   │       └── codebaseRetrieval.ts  # 代码检索工具
 │   └── utils/                # 工具函数
-│       └── logger.ts         # 日志系统
+│       ├── logger.ts         # 日志系统
+│       ├── encoding.ts       # 编码检测
+│       └── lock.ts           # 文件锁
+├── tests/                    # 单测 + 集成测试（109 测试用例）
+│   ├── chunking/             # SourceAdapter / 分片
+│   ├── db/                   # 迁移、outbox、advisory lock
+│   ├── indexer/              # 事务补偿、GC、aborted 守卫
+│   ├── integration/          # 真实 LanceDB 端到端
+│   ├── search/               # FTS、ChunkContentLoader、Packer
+│   └── vectorStore/          # chunk_id 去重、抽样校验
 ├── package.json
 └── tsconfig.json
 ```
@@ -314,11 +374,14 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
 | 语言 | AST 解析 | Import 解析 | 文件扩展名 |
 |------|----------|-------------|-----------|
 | TypeScript | ✅ | ✅ | `.ts`, `.tsx` |
-| JavaScript | ✅ | ✅ | `.js`, `.jsx`, `.mjs` |
+| JavaScript | ✅ | ✅ | `.js`, `.jsx`, `.mjs`, `.cjs` |
 | Python | ✅ | ✅ | `.py` |
 | Go | ✅ | ✅ | `.go` |
 | Java | ✅ | ✅ | `.java` |
 | Rust | ✅ | ✅ | `.rs` |
+| C | ✅ | ✅ | `.c`, `.h` |
+| C++ | ✅ | ✅ | `.cpp`, `.cc`, `.cxx`, `.hpp` |
+| C# | ✅ | ✅ | `.cs` |
 
 其他语言会采用基于行的 Fallback 分片策略，仍可正常索引和搜索。
 
@@ -327,11 +390,16 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
 ### 索引流程
 
 ```
+0. Bootstrap   → pending_marks 重放 + LanceDB schema 迁移（首次启动）
 1. Crawler     → 遍历文件系统，过滤忽略项
 2. Processor   → 读取文件内容，计算 hash
-3. Splitter    → AST 解析，语义分片
-4. Indexer     → 批量 Embedding，写入向量库
-5. FTS Index   → 更新全文搜索索引
+3. Splitter    → AST 解析，语义分片（偏移归一到 UTF-16 字符域）
+4. Indexer     → 批量 Embedding
+5. 阶段 4-6 伪事务：
+   ├─ LanceDB 写入（预删 (path, hash) 防重复 → add → 清旧版本）
+   ├─ FTS + outbox 单 SQLite 事务（失败回滚 LanceDB）
+   └─ SQLite mark + 清 outbox 单事务（失败时 outbox 保留，下次启动 replay）
+6. 末尾 GC     → 清理 LanceDB 孤儿 chunks（time budget 5s）
 ```
 
 ### 搜索流程
@@ -365,6 +433,48 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
 # 开启 debug 日志
 LOG_LEVEL=debug contextweaver search --information-request "..."
 ```
+
+## 🚨 故障排查 (v1.4.0+)
+
+### LanceDB 迁移卡死 (`aborted` 状态)
+
+**现象**：`contextweaver index` 报错 "LanceDB 处于 aborted 状态，拒绝写入以防止 schema 污染"。
+
+**原因**：v1.4.0 升级时 LanceDB 旧索引中的 `display_code` 与当前 `files.content` 抽样差异 > 1%（通常发生在 chunk 偏移用 UTF-8 字节域旧索引上）。
+
+**解决**：
+```bash
+contextweaver migrate --reset   # 清空 LanceDB chunks 表 + 重置状态为 done
+contextweaver index             # 全量重建（新 schema）
+```
+
+### 跨进程迁移竞争
+
+如果 MCP server 长驻 + 另一终端跑 `contextweaver index`，两进程会争抢迁移。v1.4.0 引入 10 分钟僵尸阈值的 advisory lock，自动让一个进程跳过迁移、另一个完成。
+
+如锁卡住（process kill -9 后），可手动清理：
+```bash
+sqlite3 ~/.contextweaver/<projectId>/index.db \
+  "DELETE FROM metadata WHERE key = 'lancedb_migration_lock';"
+```
+
+### 重复 embedding 浪费
+
+v1.4.0 已通过 `pending_marks` outbox 机制解决：FTS 写入成功但 vector_index_hash 标记失败时，下次启动自动 replay，不会触发重复 embedding。
+
+## 📜 版本历史
+
+- **v1.4.0** (2026-05): 数据架构与跨库一致性大修
+  - LanceDB chunks 表移除 `display_code/vector_text`，正文回查 `files.content`
+  - SemanticSplitter 偏移统一到 UTF-16 字符域
+  - schema_version 2 → 3，新增 `pending_marks` outbox + 三态迁移状态机
+  - 新增 `contextweaver migrate` CLI
+  - 跨进程 advisory lock 防止迁移竞争
+  - 109 个测试（含真实 LanceDB 端到端集成）
+- **v1.3.x**: 跨库写入事务性、scan 末尾自动 GC、files_fts 外部内容表
+- **v1.2.x**: 搜索管道优化、索引内存优化
+- **v1.1.x**: 智能 TopK 截断、Smart Cutoff
+- **v1.0.x**: 初始 release
 
 ## 📄 开源协议
 
