@@ -170,7 +170,14 @@ export function isChunksFtsInitialized(db: Database.Database): boolean {
 }
 
 /**
- * 批量插入 chunk FTS 索引
+ * 批量插入 chunk FTS 索引（per-file 整体替换）
+ *
+ * 收集本批次涉及的所有 file_path，事务内：
+ * 1. 按 file_path 整体 DELETE（清除该文件的所有历史 chunk_id，包括 hash 已变化的旧记录）
+ * 2. 批量 INSERT 新 chunks
+ *
+ * 这避免了「按 chunk_id 单条删」的语义陷阱：chunk_id 含 file_hash，
+ * 当文件 hash 变化时，旧 chunk_id 不会被新一轮 upsert 覆盖，会永久残留。
  */
 export function batchUpsertChunkFts(
   db: Database.Database,
@@ -182,14 +189,20 @@ export function batchUpsertChunkFts(
     content: string;
   }>,
 ): void {
-  const deleteStmt = db.prepare('DELETE FROM chunks_fts WHERE chunk_id = ?');
+  if (chunks.length === 0) return;
+
+  const paths = Array.from(new Set(chunks.map((c) => c.filePath)));
+
+  const deleteByPath = db.prepare('DELETE FROM chunks_fts WHERE file_path = ?');
   const insertStmt = db.prepare(
     'INSERT INTO chunks_fts(chunk_id, file_path, chunk_index, breadcrumb, content) VALUES (?, ?, ?, ?, ?)',
   );
 
   const transaction = db.transaction((items: typeof chunks) => {
+    for (const p of paths) {
+      deleteByPath.run(p);
+    }
     for (const item of items) {
-      deleteStmt.run(item.chunkId);
       insertStmt.run(item.chunkId, item.filePath, item.chunkIndex, item.breadcrumb, item.content);
     }
   });
