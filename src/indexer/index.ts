@@ -87,7 +87,7 @@ export class Indexer {
       await this.init();
     }
 
-    // 启动时重放 pending_marks（C1）：每个 db 只跑一次
+    // 启动时重放 pending_marks（C1）+ LanceDB schema 迁移（C2）：每个 db 只跑一次
     if (!this.replayedDbs.has(db)) {
       this.replayedDbs.add(db);
       try {
@@ -101,6 +101,25 @@ export class Indexer {
       } catch (err) {
         const error = err as { message?: string };
         logger.warn({ error: error.message }, 'pending_marks 重放失败，本次跳过');
+      }
+
+      // C2: LanceDB schema 迁移
+      try {
+        const result = await this.vectorStore?.migrateRemoveDisplayCode(db);
+        if (result?.migrated) {
+          logger.info(
+            { totalRows: result.totalRows },
+            'LanceDB schema 迁移完成：chunks 表已移除 display_code/vector_text',
+          );
+        } else if (result?.reason?.startsWith('mismatch_ratio_')) {
+          logger.error(
+            { reason: result.reason, mismatched: result.mismatched },
+            'LanceDB schema 迁移中止：抽样差异过大',
+          );
+        }
+      } catch (err) {
+        const error = err as { message?: string };
+        logger.warn({ error: error.message }, 'LanceDB schema 迁移失败，本次跳过');
       }
     }
 
@@ -322,8 +341,6 @@ export class Indexer {
               file_hash: file.hash,
               chunk_index: chunkIdx,
               vector: embeddings[embIdx],
-              display_code: chunk.displayCode,
-              vector_text: chunk.vectorText,
               language: chunk.metadata.language,
               breadcrumb: chunk.metadata.contextPath.join(' > '),
               start_index: chunk.metadata.startIndex,
@@ -336,12 +353,14 @@ export class Indexer {
 
             records.push(record);
 
+            // FTS content 直接使用 chunking 阶段的 displayCode（局部变量）
+            // C2 后 LanceDB 不再存正文，但 FTS 仍需 content 列做倒排索引
             ftsChunks.push({
               chunkId: record.chunk_id,
               filePath: record.file_path,
               chunkIndex: record.chunk_index,
               breadcrumb: record.breadcrumb,
-              content: `${record.breadcrumb}\n${record.display_code}`,
+              content: `${record.breadcrumb}\n${chunk.displayCode}`,
             });
           }
 

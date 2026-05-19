@@ -15,6 +15,7 @@ import { type ChunkRecord, getVectorStore, type VectorStore } from '../vectorSto
 import { createResolvers, type ImportResolver } from './resolvers/index.js';
 import type { ScoredChunk, SearchConfig } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
+import { ChunkContentLoader } from './ChunkContentLoader.js';
 
 // ===========================================
 // 类型定义
@@ -497,10 +498,29 @@ export class GraphExpander {
       return sortedByIndex.slice(0, limit);
     }
 
-    const scored = sortedByIndex.map((chunk) => ({
-      chunk,
-      score: scoreChunkTokenOverlap(chunk, chunk.display_code, queryTokens),
-    }));
+    // 批量从 files.content 切片（C2：不再依赖 LanceDB display_code）
+    const loader = new ChunkContentLoader(this.db as Database.Database);
+    const codeMap = loader.loadMany(
+      sortedByIndex.map((c) => ({
+        filePath: c.file_path,
+        raw_start: c.raw_start,
+        raw_end: c.raw_end,
+      })),
+    );
+
+    const scored = sortedByIndex.map((chunk) => {
+      const code = codeMap.get(
+        ChunkContentLoader.key({
+          filePath: chunk.file_path,
+          raw_start: chunk.raw_start,
+          raw_end: chunk.raw_end,
+        }),
+      ) ?? '';
+      return {
+        chunk,
+        score: scoreChunkTokenOverlap(chunk, code, queryTokens),
+      };
+    });
 
     const overlapped = scored
       .filter((s) => s.score > 0)

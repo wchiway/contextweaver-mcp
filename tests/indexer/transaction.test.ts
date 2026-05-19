@@ -134,8 +134,6 @@ describe('Indexer 事务补偿', () => {
       file_hash: hash,
       chunk_index: idx,
       vector: [0.1, 0.2],
-      display_code: 'code',
-      vector_text: 'code',
       language: 'typescript',
       breadcrumb: 'a > b',
       start_index: 0,

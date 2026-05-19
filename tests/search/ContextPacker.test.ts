@@ -26,7 +26,6 @@ function makeChunk(
       file_path: filePath,
       chunk_index: chunkIndex,
       breadcrumb: 'test',
-      display_code: 'test code',
       raw_start: rawStart,
       raw_end: rawEnd,
       _distance: 0,

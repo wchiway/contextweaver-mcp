@@ -47,6 +47,29 @@ export class SearchService {
     this.indexer = await getIndexer(this.projectId, embeddingConfig.dimensions);
     this.vectorStore = await getVectorStore(this.projectId, embeddingConfig.dimensions);
     this.db = initDb(this.projectId);
+
+    // C2 迁移：LanceDB chunks 表移除 display_code/vector_text
+    // 在 vectorStore + db 都就绪后执行；幂等（已迁移则立即返回）
+    try {
+      const result = await this.vectorStore.migrateRemoveDisplayCode(this.db);
+      if (result.migrated) {
+        logger.info(
+          { totalRows: result.totalRows },
+          'LanceDB schema 迁移完成：chunks 表已移除 display_code/vector_text',
+        );
+      } else if (result.reason && result.reason.startsWith('mismatch_ratio_')) {
+        logger.error(
+          { reason: result.reason, totalRows: result.totalRows, mismatched: result.mismatched },
+          'LanceDB schema 迁移中止：display_code 与 files.content 抽样差异过大，请检查索引一致性',
+        );
+      }
+    } catch (err) {
+      const error = err as { message?: string };
+      logger.error(
+        { error: error.message },
+        'LanceDB schema 迁移失败，继续启动；下次启动将重试',
+      );
+    }
   }
 
   // 公开接口
@@ -272,6 +295,22 @@ export class SearchService {
     const chunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
     if (!chunksMap) return [];
 
+    // 批量加载所有 chunk 的正文（C2：不再依赖 LanceDB display_code）
+    const allChunkSlices: Array<{ filePath: string; raw_start: number; raw_end: number }> = [];
+    for (const filePath of allFilePaths) {
+      const chunks = chunksMap.get(filePath);
+      if (!chunks) continue;
+      for (const c of chunks) {
+        allChunkSlices.push({
+          filePath: c.file_path,
+          raw_start: c.raw_start,
+          raw_end: c.raw_end,
+        });
+      }
+    }
+    const contentLoader = new ChunkContentLoader(this.db as Database.Database);
+    const codeMap = contentLoader.loadMany(allChunkSlices);
+
     const allChunks: ScoredChunk[] = [];
     let totalChunks = 0;
     let skippedFiles = 0;
@@ -283,10 +322,19 @@ export class SearchService {
       if (!chunks || chunks.length === 0) continue;
 
       // 对每个 chunk 计算 token overlap 得分
-      const scoredChunks = chunks.map((chunk) => ({
-        chunk,
-        overlapScore: scoreChunkTokenOverlap(chunk, chunk.display_code, queryTokens),
-      }));
+      const scoredChunks = chunks.map((chunk) => {
+        const code = codeMap.get(
+          ChunkContentLoader.key({
+            filePath: chunk.file_path,
+            raw_start: chunk.raw_start,
+            raw_end: chunk.raw_end,
+          }),
+        ) ?? '';
+        return {
+          chunk,
+          overlapScore: scoreChunkTokenOverlap(chunk, code, queryTokens),
+        };
+      });
 
       // 阈值过滤：如果文件内所有 chunk 的 maxOverlap == 0，跳过该文件
       // 避免引入无关 chunk 噪声
@@ -476,8 +524,8 @@ export class SearchService {
         raw_start: chunk.record.raw_start,
         raw_end: chunk.record.raw_end,
       });
-      // codeMap 兜底：未命中（理论不会发生）退化为 record.display_code
-      const code = codeMap.get(key) || chunk.record.display_code;
+      // codeMap 未命中（path 已被删除或越界） → 空字符串，让 rerank 仅看 breadcrumb
+      const code = codeMap.get(key) ?? '';
       const budget = Math.max(0, this.config.maxRerankChars - bc.length - 1);
       const trimmed = this.extractAroundHit(code, queryTokens, budget);
       return `${bc}\n${trimmed}`;
