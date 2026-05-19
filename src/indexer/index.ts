@@ -11,7 +11,13 @@
 import type Database from 'better-sqlite3';
 import { type EmbeddingClient, getEmbeddingClient } from '../api/embedding.js';
 import type { ProcessedChunk } from '../chunking/types.js';
-import { batchUpdateVectorIndexHash, clearVectorIndexHash } from '../db/index.js';
+import {
+  batchUpdateVectorIndexHash,
+  clearVectorIndexHash,
+  deletePendingMarks,
+  insertPendingMarks,
+  replayPendingMarks,
+} from '../db/index.js';
 import type { ProcessResult } from '../scanner/processor.js';
 import {
   batchDeleteFileChunksFts,
@@ -49,6 +55,8 @@ export class Indexer {
   private vectorStore: VectorStore | null = null;
   private embeddingClient: EmbeddingClient;
   private vectorDim: number;
+  /** outbox 重放只在每个 db 上执行一次 */
+  private replayedDbs = new WeakSet<Database.Database>();
 
   constructor(projectId: string, vectorDim = 1024) {
     this.projectId = projectId;
@@ -77,6 +85,23 @@ export class Indexer {
   ): Promise<IndexStats> {
     if (!this.vectorStore) {
       await this.init();
+    }
+
+    // 启动时重放 pending_marks（C1）：每个 db 只跑一次
+    if (!this.replayedDbs.has(db)) {
+      this.replayedDbs.add(db);
+      try {
+        const { applied, discarded } = replayPendingMarks(db);
+        if (applied > 0 || discarded > 0) {
+          logger.info(
+            { applied, discarded },
+            'pending_marks 启动重放：标记上次未收敛的索引状态',
+          );
+        }
+      } catch (err) {
+        const error = err as { message?: string };
+        logger.warn({ error: error.message }, 'pending_marks 重放失败，本次跳过');
+      }
     }
 
     const stats: IndexStats = {
@@ -353,17 +378,24 @@ export class Indexer {
           continue;
         }
 
-        // 阶段 5: FTS 写入（失败时回滚 LanceDB）
+        // 阶段 5: FTS + outbox 写入（单事务，失败时回滚 LanceDB）
+        //
+        // outbox 用途：FTS 已写但 stage6 mark 阶段失败时，启动时 replayPendingMarks
+        // 重放，避免下次扫描重复 embedding（C1 修复）。
         if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
           try {
             const pathsToDelete = filesToUpsert.map((f) => f.path);
-            batchDeleteFileChunksFts(db, pathsToDelete);
-            batchUpsertChunkFts(db, ftsChunks);
+            const ftsAndOutboxTx = db.transaction(() => {
+              batchDeleteFileChunksFts(db, pathsToDelete);
+              batchUpsertChunkFts(db, ftsChunks);
+              insertPendingMarks(db, successFiles);
+            });
+            ftsAndOutboxTx();
           } catch (err) {
             const error = err as { message?: string; stack?: string };
             logger.error(
               { error: error.message, stack: error.stack, batch: `${batchNum}/${totalBatches}` },
-              'FTS 写入失败，回滚 LanceDB 新版本',
+              'FTS/outbox 写入失败，回滚 LanceDB 新版本',
             );
             // 补偿：反向删除本批次刚 upsert 的新 hash 记录
             try {
@@ -385,11 +417,38 @@ export class Indexer {
             completedChunks += batchTexts.length;
             continue;
           }
+        } else if (successFiles.length > 0) {
+          // FTS 未初始化时，仍需写 outbox 保证 stage6 失败可重放
+          try {
+            insertPendingMarks(db, successFiles);
+          } catch (err) {
+            const error = err as { message?: string };
+            logger.warn({ error: error.message }, 'outbox 写入失败（无 FTS 路径），继续 stage6');
+          }
         }
 
-        // 阶段 6: SQLite 标记收敛
+        // 阶段 6: SQLite 标记收敛 + 清 outbox（单事务）
+        //
+        // 失败场景：磁盘满 / WAL 锁竞争。失败时 outbox 保留，
+        // 下次启动 replayPendingMarks 重放（C1 修复核心）。
         if (successFiles.length > 0) {
-          batchUpdateVectorIndexHash(db, successFiles);
+          try {
+            const markTx = db.transaction(() => {
+              batchUpdateVectorIndexHash(db, successFiles);
+              deletePendingMarks(
+                db,
+                successFiles.map((f) => f.path),
+              );
+            });
+            markTx();
+          } catch (err) {
+            const error = err as { message?: string };
+            logger.warn(
+              { error: error.message, batch: `${batchNum}/${totalBatches}` },
+              'stage6 mark 失败，outbox 已保留，下次启动将重放',
+            );
+            // 不抛错，不补偿：LanceDB+FTS 已成功，下次启动 replay 会收敛
+          }
         }
       }
 

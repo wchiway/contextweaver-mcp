@@ -138,7 +138,7 @@ export function initDb(projectId: string): Database.Database {
 // Schema 迁移
 // ===========================================
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 const METADATA_KEY_SCHEMA_VERSION = 'schema_version';
 
 /**
@@ -212,6 +212,8 @@ export function migrateSchema(db: Database.Database): void {
       .get();
 
     if (fileCount === 0 && !ftsExists) {
+      // 全新库也要创建 v3 的 pending_marks 表
+      migrateToV3(db);
       setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
       return;
     }
@@ -221,6 +223,12 @@ export function migrateSchema(db: Database.Database): void {
   if ((current ?? 1) < 2) {
     migrateToV2(db);
     setSchemaVersion(db, 2);
+  }
+
+  // v2 → v3：pending_marks outbox 表
+  if ((current ?? 2) < 3) {
+    migrateToV3(db);
+    setSchemaVersion(db, 3);
   }
 }
 
@@ -292,6 +300,117 @@ function migrateToV2(db: Database.Database): void {
   db.exec(`INSERT INTO files_fts(files_fts) VALUES('rebuild')`);
 
   logger.info('schema 迁移 v1 → v2 完成');
+}
+
+/**
+ * v2 → v3 迁移：新增 pending_marks outbox 表
+ *
+ * 用于 C1 修复：vector_index_hash 更新阶段失败时，已写入 LanceDB+FTS
+ * 的成功记录会落入 outbox，下次启动时 replayPendingMarks 重放，
+ * 避免重复 embedding。
+ *
+ * created_at 用于诊断异常积累。
+ */
+function migrateToV3(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_marks (
+      path TEXT PRIMARY KEY,
+      hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+  logger.info('schema 迁移 v2 → v3 完成: pending_marks 表已创建');
+}
+
+/**
+ * 插入 outbox 标记（在 FTS 写入成功的同一 SQLite 事务中调用）
+ */
+export function insertPendingMarks(
+  db: Database.Database,
+  items: Array<{ path: string; hash: string }>,
+): void {
+  if (items.length === 0) return;
+  const now = Date.now();
+  const insert = db.prepare(`
+    INSERT INTO pending_marks (path, hash, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, created_at = excluded.created_at
+  `);
+  const tx = db.transaction((data: typeof items) => {
+    for (const it of data) {
+      insert.run(it.path, it.hash, now);
+    }
+  });
+  tx(items);
+}
+
+/**
+ * 删除 outbox 标记（在 vector_index_hash 标记成功的同一事务中调用）
+ */
+export function deletePendingMarks(db: Database.Database, paths: string[]): void {
+  if (paths.length === 0) return;
+  const del = db.prepare('DELETE FROM pending_marks WHERE path = ?');
+  const tx = db.transaction((items: string[]) => {
+    for (const p of items) del.run(p);
+  });
+  tx(paths);
+}
+
+/**
+ * 启动时重放 outbox：将 pending_marks 中残留的标记应用到 vector_index_hash
+ *
+ * 触发场景：上次运行时 LanceDB+FTS 成功写入，但 SQLite 标记阶段崩溃/失败。
+ *
+ * Hash mismatch 守卫：仅当 files.hash 仍等于 outbox.hash 时才更新，
+ * 避免文件已再次变更后误覆盖。不匹配的 outbox 记录也会清理（已无意义）。
+ *
+ * @returns 已处理的记录数（含 hash 不匹配被丢弃的）
+ */
+export function replayPendingMarks(db: Database.Database): {
+  applied: number;
+  discarded: number;
+} {
+  const rows = db.prepare('SELECT path, hash FROM pending_marks').all() as Array<{
+    path: string;
+    hash: string;
+  }>;
+  if (rows.length === 0) return { applied: 0, discarded: 0 };
+
+  const update = db.prepare(`
+    UPDATE files SET vector_index_hash = ?
+    WHERE path = ? AND hash = ?
+  `);
+  const del = db.prepare('DELETE FROM pending_marks WHERE path = ?');
+
+  let applied = 0;
+  let discarded = 0;
+
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const info = update.run(r.hash, r.path, r.hash);
+      if (info.changes > 0) {
+        applied++;
+      } else {
+        // files.hash 已变更（或 path 已删除）→ outbox 标记过时，丢弃
+        discarded++;
+      }
+      del.run(r.path);
+    }
+  });
+  tx();
+
+  if (applied > 0 || discarded > 0) {
+    logger.info({ applied, discarded }, 'pending_marks 重放完成');
+  }
+  return { applied, discarded };
+}
+
+/**
+ * 获取 pending_marks 中的标记数（诊断用）
+ */
+export function countPendingMarks(db: Database.Database): number {
+  const row = db.prepare('SELECT COUNT(*) as c FROM pending_marks').get() as { c: number };
+  return row.c;
 }
 
 /**
