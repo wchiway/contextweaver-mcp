@@ -15,6 +15,7 @@ import {
   batchUpdateVectorIndexHash,
   clearVectorIndexHash,
   deletePendingMarks,
+  getLanceDbMigrationState,
   insertPendingMarks,
   replayPendingMarks,
 } from '../db/index.js';
@@ -121,6 +122,30 @@ export class Indexer {
         const error = err as { message?: string };
         logger.warn({ error: error.message }, 'LanceDB schema 迁移失败，本次跳过');
       }
+    }
+
+    // CRIT-C: 检查 aborted 状态，若处于 aborted 则拒绝整个批次防止 schema 污染
+    //
+    // 触发条件：抽样校验失败后写入了 state='aborted'。继续写入会让新记录
+    // 缺 display_code 列，下次校验 mismatch 只增不减 → 永久卡死。
+    //
+    // 解决方法：用户运行 `contextweaver migrate --reset` 清空 LanceDB 并重新索引。
+    const migrationState = getLanceDbMigrationState(db);
+    if (migrationState === 'aborted') {
+      const errorCount = results.filter(
+        (r) => r.status === 'added' || r.status === 'modified',
+      ).length;
+      logger.error(
+        { migrationState, blockedFiles: errorCount },
+        'LanceDB 处于 aborted 状态，拒绝写入以防止 schema 污染。' +
+          '运行 `contextweaver migrate --reset` 清空 LanceDB 并重新索引。',
+      );
+      return {
+        indexed: 0,
+        deleted: 0,
+        errors: errorCount,
+        skipped: results.length - errorCount,
+      };
     }
 
     const stats: IndexStats = {
