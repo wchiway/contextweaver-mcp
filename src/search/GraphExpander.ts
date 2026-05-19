@@ -499,7 +499,7 @@ export class GraphExpander {
 
     const scored = sortedByIndex.map((chunk) => ({
       chunk,
-      score: scoreChunkTokenOverlap(chunk, queryTokens),
+      score: scoreChunkTokenOverlap(chunk, chunk.display_code, queryTokens),
     }));
 
     const overlapped = scored
