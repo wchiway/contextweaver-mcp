@@ -577,9 +577,13 @@ export function clear(db: Database.Database): void {
 
 const METADATA_KEY_EMBEDDING_DIMENSIONS = 'embedding_dimensions';
 const METADATA_KEY_LANCEDB_MIGRATION_STATE = 'lancedb_migration_displaycode_state';
+const METADATA_KEY_LANCEDB_MIGRATION_LOCK = 'lancedb_migration_lock';
 
 /** LanceDB display_code 移除迁移状态 */
 export type LanceDbMigrationState = 'pending' | 'done' | 'aborted';
+
+/** 迁移锁过期时间（毫秒）：超过此时长视为僵尸锁可被夺取 */
+const MIGRATION_LOCK_STALE_MS = 10 * 60 * 1000; // 10 分钟
 
 /**
  * 获取 metadata 值
@@ -655,4 +659,59 @@ export function setLanceDbMigrationState(
 export function clearAllVectorIndexHash(db: Database.Database): number {
   const info = db.prepare('UPDATE files SET vector_index_hash = NULL').run();
   return info.changes;
+}
+
+/**
+ * 尝试获取 LanceDB 迁移锁（H2 修复）
+ *
+ * 跨进程互斥：SearchService 与 contextweaver index 可能并发触发迁移。
+ * SQLite 单写者 + INSERT OR IGNORE 提供原子互斥。
+ *
+ * - 锁记录：JSON {pid, acquiredAt}
+ * - 过期阈值：10 分钟（超时视为僵尸锁，可被新进程夺取）
+ *
+ * @returns true 表示获取成功（调用方必须在迁移结束后调用 releaseLanceDbMigrationLock）
+ */
+export function tryAcquireLanceDbMigrationLock(db: Database.Database): boolean {
+  const now = Date.now();
+  const pid = process.pid;
+  const lockValue = JSON.stringify({ pid, acquiredAt: now });
+
+  // 检查现有锁
+  const existing = getMetadata(db, METADATA_KEY_LANCEDB_MIGRATION_LOCK);
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing) as { pid: number; acquiredAt: number };
+      // 同 PID（重入）→ 视为持有
+      if (parsed.pid === pid) return true;
+      // 未过期 → 失败
+      if (now - parsed.acquiredAt < MIGRATION_LOCK_STALE_MS) return false;
+      // 过期 → 夺取
+      logger.warn(
+        { stalePid: parsed.pid, age: now - parsed.acquiredAt },
+        '检测到僵尸迁移锁，强制夺取',
+      );
+    } catch {
+      // 锁数据损坏 → 当作过期处理
+    }
+  }
+
+  // 写入锁（UPSERT 保证幂等）
+  db.prepare(`
+    INSERT INTO metadata (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(METADATA_KEY_LANCEDB_MIGRATION_LOCK, lockValue);
+
+  // 二次校验：是否被并发进程抢先（race window 极小但理论存在）
+  const reread = getMetadata(db, METADATA_KEY_LANCEDB_MIGRATION_LOCK);
+  if (reread !== lockValue) return false;
+  return true;
+}
+
+/**
+ * 释放迁移锁
+ */
+export function releaseLanceDbMigrationLock(db: Database.Database): void {
+  db.prepare('DELETE FROM metadata WHERE key = ?').run(METADATA_KEY_LANCEDB_MIGRATION_LOCK);
 }
