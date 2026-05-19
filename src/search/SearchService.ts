@@ -11,6 +11,7 @@
 import type Database from 'better-sqlite3';
 import { getRerankerClient } from '../api/reranker.js';
 import { getEmbeddingConfig } from '../config.js';
+import { bootstrap } from '../db/bootstrap.js';
 import { initDb } from '../db/index.js';
 import { getIndexer, type Indexer } from '../indexer/index.js';
 import { isDebugEnabled, logger } from '../utils/logger.js';
@@ -48,27 +49,13 @@ export class SearchService {
     this.vectorStore = await getVectorStore(this.projectId, embeddingConfig.dimensions);
     this.db = initDb(this.projectId);
 
-    // C2 迁移：LanceDB chunks 表移除 display_code/vector_text
-    // 在 vectorStore + db 都就绪后执行；幂等（已迁移则立即返回）
+    // H3: bootstrap（pending_marks 重放 + LanceDB 迁移）
+    // 跨进程互斥由 advisory lock 保证；同进程内 Indexer 也会调一次（幂等）
     try {
-      const result = await this.vectorStore.migrateRemoveDisplayCode(this.db);
-      if (result.migrated) {
-        logger.info(
-          { totalRows: result.totalRows },
-          'LanceDB schema 迁移完成：chunks 表已移除 display_code/vector_text',
-        );
-      } else if (result.reason && result.reason.startsWith('mismatch_ratio_')) {
-        logger.error(
-          { reason: result.reason, totalRows: result.totalRows, mismatched: result.mismatched },
-          'LanceDB schema 迁移中止：display_code 与 files.content 抽样差异过大，请检查索引一致性',
-        );
-      }
+      await bootstrap(this.db, this.vectorStore);
     } catch (err) {
       const error = err as { message?: string };
-      logger.error(
-        { error: error.message },
-        'LanceDB schema 迁移失败，继续启动；下次启动将重试',
-      );
+      logger.warn({ error: error.message }, 'bootstrap 失败，继续启动');
     }
   }
 

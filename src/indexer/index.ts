@@ -11,13 +11,13 @@
 import type Database from 'better-sqlite3';
 import { type EmbeddingClient, getEmbeddingClient } from '../api/embedding.js';
 import type { ProcessedChunk } from '../chunking/types.js';
+import { bootstrap } from '../db/bootstrap.js';
 import {
   batchUpdateVectorIndexHash,
   clearVectorIndexHash,
   deletePendingMarks,
   getLanceDbMigrationState,
   insertPendingMarks,
-  replayPendingMarks,
 } from '../db/index.js';
 import type { ProcessResult } from '../scanner/processor.js';
 import {
@@ -56,8 +56,8 @@ export class Indexer {
   private vectorStore: VectorStore | null = null;
   private embeddingClient: EmbeddingClient;
   private vectorDim: number;
-  /** outbox 重放只在每个 db 上执行一次 */
-  private replayedDbs = new WeakSet<Database.Database>();
+  /** bootstrap（pending_marks 重放 + LanceDB 迁移）只在每个 db 上执行一次 */
+  private bootstrappedDbs = new WeakSet<Database.Database>();
 
   constructor(projectId: string, vectorDim = 1024) {
     this.projectId = projectId;
@@ -88,39 +88,14 @@ export class Indexer {
       await this.init();
     }
 
-    // 启动时重放 pending_marks（C1）+ LanceDB schema 迁移（C2）：每个 db 只跑一次
-    if (!this.replayedDbs.has(db)) {
-      this.replayedDbs.add(db);
+    // 启动时执行 bootstrap（pending_marks 重放 + LanceDB 迁移）：每个 db 只跑一次
+    if (!this.bootstrappedDbs.has(db)) {
+      this.bootstrappedDbs.add(db);
       try {
-        const { applied, discarded } = replayPendingMarks(db);
-        if (applied > 0 || discarded > 0) {
-          logger.info(
-            { applied, discarded },
-            'pending_marks 启动重放：标记上次未收敛的索引状态',
-          );
-        }
+        await bootstrap(db, this.vectorStore as VectorStore);
       } catch (err) {
         const error = err as { message?: string };
-        logger.warn({ error: error.message }, 'pending_marks 重放失败，本次跳过');
-      }
-
-      // C2: LanceDB schema 迁移
-      try {
-        const result = await this.vectorStore?.migrateRemoveDisplayCode(db);
-        if (result?.migrated) {
-          logger.info(
-            { totalRows: result.totalRows },
-            'LanceDB schema 迁移完成：chunks 表已移除 display_code/vector_text',
-          );
-        } else if (result?.reason?.startsWith('mismatch_ratio_')) {
-          logger.error(
-            { reason: result.reason, mismatched: result.mismatched },
-            'LanceDB schema 迁移中止：抽样差异过大',
-          );
-        }
-      } catch (err) {
-        const error = err as { message?: string };
-        logger.warn({ error: error.message }, 'LanceDB schema 迁移失败，本次跳过');
+        logger.warn({ error: error.message }, 'bootstrap 失败，本次跳过');
       }
     }
 

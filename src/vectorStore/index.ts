@@ -177,133 +177,41 @@ export class VectorStore {
    *
    * @returns 迁移摘要；migrated=false 表示无需迁移或被中止
    */
-  async migrateRemoveDisplayCode(
-    db: import('better-sqlite3').Database,
-    options: { sampleSize?: number; sampleMaxMismatchRatio?: number } = {},
-  ): Promise<{ migrated: boolean; totalRows: number; mismatched?: number; reason?: string }> {
+  /**
+   * 检测 chunks 表是否含 display_code 列（H3：纯 vector 操作）
+   *
+   * 返回值：
+   * - true: 表存在且含 display_code（需要迁移）
+   * - false: 表存在但不含 display_code（已迁移）
+   * - null: 表不存在（全新库 / 已 drop）
+   */
+  async hasDisplayCodeColumn(): Promise<boolean | null> {
+    if (!this.table) return null;
+    const schema = await this.table.schema();
+    return schema.fields.some((f) => f.name === 'display_code');
+  }
+
+  /**
+   * 读取全表（H3：纯 vector 操作，供 bootstrap 模块抽样校验使用）
+   */
+  async readAllRowsRaw(): Promise<OldChunkRecord[]> {
+    if (!this.table) return [];
+    return (await this.table.query().toArray()) as OldChunkRecord[];
+  }
+
+  /**
+   * Drop chunks 表并用新 schema 重建（H3：纯 vector 操作）
+   *
+   * 调用方需保证：传入的 newRows 已剥离 display_code/vector_text 字段。
+   * 崩溃恢复语义由 bootstrap 模块的 state machine 负责。
+   */
+  async dropAndRecreateChunks(newRows: Record<string, unknown>[]): Promise<void> {
     if (!this.db) throw new Error('VectorStore not initialized');
 
-    const {
-      getLanceDbMigrationState,
-      setLanceDbMigrationState,
-      clearAllVectorIndexHash,
-      tryAcquireLanceDbMigrationLock,
-      releaseLanceDbMigrationLock,
-    } = await import('../db/index.js');
-
-    // 早退：done/aborted 不需要进入锁竞争
-    const earlyState = getLanceDbMigrationState(db);
-    if (earlyState === 'done') {
-      return { migrated: false, totalRows: 0, reason: 'already_migrated_persisted' };
-    }
-    if (earlyState === 'aborted') {
-      return { migrated: false, totalRows: 0, reason: 'aborted_awaiting_manual' };
-    }
-
-    // H2: 跨进程互斥锁
-    if (!tryAcquireLanceDbMigrationLock(db)) {
-      return { migrated: false, totalRows: 0, reason: 'lock_held_by_other_process' };
-    }
-
-    try {
-      // 锁内重新读取状态（防止两次读取间状态变化）
-      const persistedState = getLanceDbMigrationState(db);
-      if (persistedState === 'done') {
-        return { migrated: false, totalRows: 0, reason: 'already_migrated_persisted' };
-      }
-      if (persistedState === 'aborted') {
-        return { migrated: false, totalRows: 0, reason: 'aborted_awaiting_manual' };
-      }
-
-      // 'pending': 上次迁移崩溃中断
-      if (persistedState === 'pending') {
-        if (!this.table) {
-          setLanceDbMigrationState(db, 'done');
-          return { migrated: true, totalRows: 0, reason: 'recovered_pending_no_table' };
-        }
-        // 表仍存在 → 继续走标准流程
-      }
-
-      if (!this.table) {
-        setLanceDbMigrationState(db, 'done');
-        return { migrated: false, totalRows: 0, reason: 'empty' };
-      }
-
-      // 检查 schema 是否含 display_code
-      const schema = await this.table.schema();
-      const hasDisplayCode = schema.fields.some((f) => f.name === 'display_code');
-      if (!hasDisplayCode) {
-        setLanceDbMigrationState(db, 'done');
-        return { migrated: false, totalRows: 0, reason: 'already_migrated' };
-      }
-
-      const sampleSize = options.sampleSize ?? 100;
-      const maxMismatchRatio = options.sampleMaxMismatchRatio ?? 0.01;
-
-      // 1. 读取全表
-      const oldRows = (await this.table.query().toArray()) as OldChunkRecord[];
-      const totalRows = oldRows.length;
-
-      // 2. 抽样校验
-      if (totalRows > 0) {
-        const stmt = db.prepare('SELECT content FROM files WHERE path = ?');
-        const getContent = (path: string): string | null => {
-          const row = stmt.get(path) as { content: string | null } | undefined;
-          return row?.content ?? null;
-        };
-        const check = sampleCheckDisplayCode(oldRows, getContent, {
-          sampleSize,
-          maxMismatchRatio,
-        });
-        if (check.abort) {
-          setLanceDbMigrationState(db, 'aborted');
-          return {
-            migrated: false,
-            totalRows,
-            mismatched: check.mismatched,
-            reason: `mismatch_ratio_${check.ratio.toFixed(3)}_exceeds_${maxMismatchRatio}`,
-          };
-        }
-      }
-
-      // 3. 构造新 schema 记录
-      const newRows = oldRows.map((r) => ({
-        chunk_id: r.chunk_id,
-        file_path: r.file_path,
-        file_hash: r.file_hash,
-        chunk_index: r.chunk_index,
-        vector: r.vector,
-        language: r.language,
-        breadcrumb: r.breadcrumb,
-        start_index: r.start_index,
-        end_index: r.end_index,
-        raw_start: r.raw_start,
-        raw_end: r.raw_end,
-        vec_start: r.vec_start,
-        vec_end: r.vec_end,
-      }));
-
-      // 4. CRIT-B: 标记 pending + 清 vector_index_hash 全表
-      const cleared = clearAllVectorIndexHash(db);
-      setLanceDbMigrationState(db, 'pending');
-
-      // 5. drop + recreate（崩溃风险窗口）
-      await this.db.dropTable('chunks');
-      this.table = null;
-      if (newRows.length > 0) {
-        this.table = await this.db.createTable(
-          'chunks',
-          newRows as unknown as Record<string, unknown>[],
-        );
-      }
-
-      // 6. 标记 done
-      setLanceDbMigrationState(db, 'done');
-
-      return { migrated: true, totalRows, reason: `cleared_${cleared}_vector_index_hash` };
-    } finally {
-      // H2: 无论成功/失败/中止，释放锁
-      releaseLanceDbMigrationLock(db);
+    await this.db.dropTable('chunks');
+    this.table = null;
+    if (newRows.length > 0) {
+      this.table = await this.db.createTable('chunks', newRows);
     }
   }
 
