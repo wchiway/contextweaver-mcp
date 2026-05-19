@@ -182,8 +182,39 @@ export class VectorStore {
     options: { sampleSize?: number; sampleMaxMismatchRatio?: number } = {},
   ): Promise<{ migrated: boolean; totalRows: number; mismatched?: number; reason?: string }> {
     if (!this.db) throw new Error('VectorStore not initialized');
+
+    // CRIT-B: 检查持久化状态，决定是否需要恢复
+    const { getLanceDbMigrationState, setLanceDbMigrationState, clearAllVectorIndexHash } =
+      await import('../db/index.js');
+    const persistedState = getLanceDbMigrationState(db);
+
+    // 'done': 已迁移完成，直接退出
+    if (persistedState === 'done') {
+      return { migrated: false, totalRows: 0, reason: 'already_migrated_persisted' };
+    }
+
+    // 'aborted': 上次校验失败，等待人工干预（CRIT-C 负责入口逻辑）
+    if (persistedState === 'aborted') {
+      return { migrated: false, totalRows: 0, reason: 'aborted_awaiting_manual' };
+    }
+
+    // 'pending': 上次迁移崩溃中断
+    // - 此时所有 vector_index_hash 已被清空，文件会被自愈机制重建
+    // - LanceDB 状态可能是：旧表（崩溃前 dropTable 未执行）/ 表已 drop / 部分新表
+    // - 安全处理：如果表已不存在，setLanceDbMigrationState('done') 即可
+    //   （新写入会用新 schema 自然产生新表）；如果旧表残留，继续走迁移流程
+    if (persistedState === 'pending') {
+      if (!this.table) {
+        // 表已 drop，迁移半完成；新数据会用新 schema 写入
+        setLanceDbMigrationState(db, 'done');
+        return { migrated: true, totalRows: 0, reason: 'recovered_pending_no_table' };
+      }
+      // 表仍存在 → 继续走下面的标准流程（会再次 drop+recreate）
+    }
+
     if (!this.table) {
-      // 全新库，没有任何 chunks → 等价于已迁移
+      // 全新库，没有任何 chunks → 直接标 'done'
+      setLanceDbMigrationState(db, 'done');
       return { migrated: false, totalRows: 0, reason: 'empty' };
     }
 
@@ -191,6 +222,8 @@ export class VectorStore {
     const schema = await this.table.schema();
     const hasDisplayCode = schema.fields.some((f) => f.name === 'display_code');
     if (!hasDisplayCode) {
+      // 已是新 schema（手工迁移过的库等）→ 标 'done'
+      setLanceDbMigrationState(db, 'done');
       return { migrated: false, totalRows: 0, reason: 'already_migrated' };
     }
 
@@ -214,6 +247,8 @@ export class VectorStore {
         maxMismatchRatio,
       });
       if (check.abort) {
+        // CRIT-C: 持久化 abort 状态，阻止后续写入污染 schema
+        setLanceDbMigrationState(db, 'aborted');
         return {
           migrated: false,
           totalRows,
@@ -240,7 +275,12 @@ export class VectorStore {
       vec_end: r.vec_end,
     }));
 
-    // 4. drop + recreate
+    // 4. CRIT-B: 标记 pending + 清 vector_index_hash 全表
+    //    这一步必须在 dropTable 之前，保证崩溃后自愈机制能触发全量重建。
+    const cleared = clearAllVectorIndexHash(db);
+    setLanceDbMigrationState(db, 'pending');
+
+    // 5. drop + recreate（崩溃风险窗口）
     await this.db.dropTable('chunks');
     this.table = null;
     if (newRows.length > 0) {
@@ -250,7 +290,10 @@ export class VectorStore {
       );
     }
 
-    return { migrated: true, totalRows };
+    // 6. 标记 done
+    setLanceDbMigrationState(db, 'done');
+
+    return { migrated: true, totalRows, reason: `cleared_${cleared}_vector_index_hash` };
   }
 
   /**

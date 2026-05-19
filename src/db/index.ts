@@ -576,6 +576,10 @@ export function clear(db: Database.Database): void {
 // ===========================================
 
 const METADATA_KEY_EMBEDDING_DIMENSIONS = 'embedding_dimensions';
+const METADATA_KEY_LANCEDB_MIGRATION_STATE = 'lancedb_migration_displaycode_state';
+
+/** LanceDB display_code 移除迁移状态 */
+export type LanceDbMigrationState = 'pending' | 'done' | 'aborted';
 
 /**
  * 获取 metadata 值
@@ -614,4 +618,41 @@ export function getStoredEmbeddingDimensions(db: Database.Database): number | nu
  */
 export function setStoredEmbeddingDimensions(db: Database.Database, dimensions: number): void {
   setMetadata(db, METADATA_KEY_EMBEDDING_DIMENSIONS, String(dimensions));
+}
+
+/**
+ * 获取 LanceDB display_code 移除迁移的状态（CRIT-B）
+ *
+ * - null/undefined：未启动迁移（旧库或新库）
+ * - 'pending'：迁移已开始（已清 vector_index_hash），LanceDB 处于不确定状态
+ * - 'done'：迁移完成，LanceDB chunks 表使用新 schema
+ * - 'aborted'：抽样校验失败，等待人工干预（CRIT-C）
+ */
+export function getLanceDbMigrationState(
+  db: Database.Database,
+): LanceDbMigrationState | null {
+  const value = getMetadata(db, METADATA_KEY_LANCEDB_MIGRATION_STATE);
+  if (value === 'pending' || value === 'done' || value === 'aborted') return value;
+  return null;
+}
+
+/**
+ * 设置 LanceDB 迁移状态（CRIT-B）
+ */
+export function setLanceDbMigrationState(
+  db: Database.Database,
+  state: LanceDbMigrationState,
+): void {
+  setMetadata(db, METADATA_KEY_LANCEDB_MIGRATION_STATE, state);
+}
+
+/**
+ * 清空全部 vector_index_hash（CRIT-B 迁移前调用）
+ *
+ * 触发条件：LanceDB schema 即将变化，所有现有 chunks 无效，
+ * 让自愈机制（getFilesNeedingVectorIndex）在下次 scan 时重建。
+ */
+export function clearAllVectorIndexHash(db: Database.Database): number {
+  const info = db.prepare('UPDATE files SET vector_index_hash = NULL').run();
+  return info.changes;
 }
