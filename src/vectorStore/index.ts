@@ -94,8 +94,10 @@ export function sampleCheckDisplayCode(
     const content = getContent(r.file_path);
     if (content === null) continue; // path 已删，跳过
     sampled++;
-    const safeStart = Math.max(0, Math.min(r.raw_start, content.length));
-    const safeEnd = Math.max(safeStart, Math.min(r.raw_end, content.length));
+    // CRIT-A: 使用 start_index/end_index（与 displayCode 同源），而非 raw_start/raw_end
+    // raw_start = prevEnd 包含前置 gap，与 display_code 字段语义不符
+    const safeStart = Math.max(0, Math.min(r.start_index, content.length));
+    const safeEnd = Math.max(safeStart, Math.min(r.end_index, content.length));
     const expected = content.slice(safeStart, safeEnd);
     if (expected !== r.display_code) {
       mismatched++;

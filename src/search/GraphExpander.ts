@@ -499,12 +499,13 @@ export class GraphExpander {
     }
 
     // 批量从 files.content 切片（C2：不再依赖 LanceDB display_code）
+    // 使用 start_index/end_index 切片（CRIT-A：与 displayCode 同源）
     const loader = new ChunkContentLoader(this.db as Database.Database);
     const codeMap = loader.loadMany(
       sortedByIndex.map((c) => ({
         filePath: c.file_path,
-        raw_start: c.raw_start,
-        raw_end: c.raw_end,
+        start_index: c.start_index,
+        end_index: c.end_index,
       })),
     );
 
@@ -512,8 +513,8 @@ export class GraphExpander {
       const code = codeMap.get(
         ChunkContentLoader.key({
           filePath: chunk.file_path,
-          raw_start: chunk.raw_start,
-          raw_end: chunk.raw_end,
+          start_index: chunk.start_index,
+          end_index: chunk.end_index,
         }),
       ) ?? '';
       return {

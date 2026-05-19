@@ -459,11 +459,16 @@ export class SemanticSplitter {
       const displayCode = this.adapter.slice(start, end);
       const vectorCode = this.adapter.slice(vectorStart, vectorEnd);
 
+      // 统一所有偏移到 UTF-16 字符域（C2 CRIT-A 修复）
+      // tree-sitter 在 utf8 域返回字节偏移，下游 files.content 切片用 UTF-16，
+      // 必须在写入 metadata 前转换为统一域。
+      const toChar = (n: number) => this.adapter.toCharOffset(n);
+
       const metadata: ChunkMetadata = {
-        startIndex: start,
-        endIndex: end,
-        rawSpan: { start: prevEnd, end: rawSpanEnd },
-        vectorSpan: { start: vectorStart, end: vectorEnd },
+        startIndex: toChar(start),
+        endIndex: toChar(end),
+        rawSpan: { start: toChar(prevEnd), end: toChar(rawSpanEnd) },
+        vectorSpan: { start: toChar(vectorStart), end: toChar(vectorEnd) },
         filePath,
         language,
         contextPath: w.contextPath,
