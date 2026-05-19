@@ -30,14 +30,18 @@ function getTokenBoundaryRegex(token: string): RegExp {
  * 计算 chunk 与查询的 token overlap 得分
  *
  * 匹配策略：
- * - breadcrumb 和 display_code 都参与匹配
+ * - breadcrumb 和 code 都参与匹配
  * - 精确匹配得 1 分，子串匹配得 0.5 分
+ *
+ * 注：code 由调用方传入。C2 修复后，code 应通过 ChunkContentLoader
+ * 从 files.content 切片得到，而非依赖 LanceDB 中的 display_code。
  */
 export function scoreChunkTokenOverlap(
-  chunk: { breadcrumb: string; display_code: string },
+  chunk: { breadcrumb: string },
+  code: string,
   queryTokens: Set<string>,
 ): number {
-  const text = `${chunk.breadcrumb} ${chunk.display_code}`.toLowerCase();
+  const text = `${chunk.breadcrumb} ${code}`.toLowerCase();
   let score = 0;
 
   for (const token of queryTokens) {

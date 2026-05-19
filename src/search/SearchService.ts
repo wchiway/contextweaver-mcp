@@ -16,6 +16,7 @@ import { getIndexer, type Indexer } from '../indexer/index.js';
 import { isDebugEnabled, logger } from '../utils/logger.js';
 import type { SearchResult as VectorSearchResult } from '../vectorStore/index.js';
 import { getVectorStore, type VectorStore } from '../vectorStore/index.js';
+import { ChunkContentLoader } from './ChunkContentLoader.js';
 import { ContextPacker } from './ContextPacker.js';
 import { DEFAULT_CONFIG } from './config.js';
 import {
@@ -284,7 +285,7 @@ export class SearchService {
       // 对每个 chunk 计算 token overlap 得分
       const scoredChunks = chunks.map((chunk) => ({
         chunk,
-        overlapScore: scoreChunkTokenOverlap(chunk, queryTokens),
+        overlapScore: scoreChunkTokenOverlap(chunk, chunk.display_code, queryTokens),
       }));
 
       // 阈值过滤：如果文件内所有 chunk 的 maxOverlap == 0，跳过该文件
@@ -457,12 +458,29 @@ export class SearchService {
 
     const queryTokens = this.extractQueryTokens(query);
 
+    // 批量从 files.content 加载 chunk 正文（C2 修复：不再依赖 LanceDB display_code）
+    const loader = new ChunkContentLoader(this.db as Database.Database);
+    const codeMap = loader.loadMany(
+      candidates.map((c) => ({
+        filePath: c.filePath,
+        raw_start: c.record.raw_start,
+        raw_end: c.record.raw_end,
+      })),
+    );
+
     // 构造 rerank 文本：围绕命中行截取，而非头尾截断
     const textExtractor = (chunk: ScoredChunk): string => {
       const bc = this.truncateMiddle(chunk.record.breadcrumb, this.config.maxBreadcrumbChars);
+      const key = ChunkContentLoader.key({
+        filePath: chunk.filePath,
+        raw_start: chunk.record.raw_start,
+        raw_end: chunk.record.raw_end,
+      });
+      // codeMap 兜底：未命中（理论不会发生）退化为 record.display_code
+      const code = codeMap.get(key) || chunk.record.display_code;
       const budget = Math.max(0, this.config.maxRerankChars - bc.length - 1);
-      const code = this.extractAroundHit(chunk.record.display_code, queryTokens, budget);
-      return `${bc}\n${code}`;
+      const trimmed = this.extractAroundHit(code, queryTokens, budget);
+      return `${bc}\n${trimmed}`;
     };
 
     try {
