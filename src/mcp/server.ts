@@ -4,6 +4,9 @@
  * 提供代码库检索能力的 Model Context Protocol 服务器
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -15,6 +18,25 @@ import { codebaseRetrievalSchema, handleCodebaseRetrieval } from './tools/index.
 // ===========================================
 
 const SERVER_NAME = 'contextweaver';
+
+// 从最近的 package.json 读取版本，兼容源码 (src/mcp/) 与打包后 (dist/) 两种目录布局
+function resolveServerVersion(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 5; i++) {
+    const pkgPath = join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        return (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }).version ?? '0.0.0';
+      } catch {
+        break;
+      }
+    }
+    dir = dirname(dir);
+  }
+  return '0.0.0';
+}
+
+const SERVER_VERSION = resolveServerVersion();
 
 // ===========================================
 // 工具定义
@@ -100,7 +122,7 @@ export async function startMcpServer(): Promise<void> {
   const server = new Server(
     {
       name: SERVER_NAME,
-      version: '1.0.0',
+      version: SERVER_VERSION,
     },
     {
       capabilities: {
