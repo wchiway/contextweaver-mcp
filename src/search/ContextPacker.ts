@@ -20,7 +20,10 @@ export class ContextPacker {
   /**
    * 打包：合并 chunks → 按文件聚合段落 → 预算裁剪
    */
-  async pack(chunks: ScoredChunk[], db: Database.Database): Promise<Array<{ filePath: string; segments: Segment[] }>> {
+  async pack(
+    chunks: ScoredChunk[],
+    db: Database.Database,
+  ): Promise<Array<{ filePath: string; segments: Segment[] }>> {
     if (chunks.length === 0) return [];
 
     // 1. 按文件分组

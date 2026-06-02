@@ -100,8 +100,9 @@ export async function getParser(language: string): Promise<Parser | null> {
   if (!grammar) return null;
 
   // 创建解析器
+  // grammar 来自 tree-sitter 原生模块（无导出类型，见 loadGrammar），断言到 setLanguage 期望的入参类型
   const parser = new Parser();
-  parser.setLanguage(grammar);
+  parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
 
   // 缓存
   parserCache.set(language, parser);

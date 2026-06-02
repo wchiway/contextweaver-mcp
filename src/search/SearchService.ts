@@ -311,13 +311,14 @@ export class SearchService {
 
       // 对每个 chunk 计算 token overlap 得分
       const scoredChunks = chunks.map((chunk) => {
-        const code = codeMap.get(
-          ChunkContentLoader.key({
-            filePath: chunk.file_path,
-            start_index: chunk.start_index,
-            end_index: chunk.end_index,
-          }),
-        ) ?? '';
+        const code =
+          codeMap.get(
+            ChunkContentLoader.key({
+              filePath: chunk.file_path,
+              start_index: chunk.start_index,
+              end_index: chunk.end_index,
+            }),
+          ) ?? '';
         return {
           chunk,
           overlapScore: scoreChunkTokenOverlap(chunk, code, queryTokens),

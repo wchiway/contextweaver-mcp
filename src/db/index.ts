@@ -3,10 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import {
-  initChunksFts,
-  initFilesFts,
-} from '../search/fts.js';
+import { initChunksFts, initFilesFts } from '../search/fts.js';
 import { logger } from '../utils/logger.js';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
@@ -204,9 +201,7 @@ export function migrateSchema(db: Database.Database): void {
   // 全新数据库：直接写入当前版本，无需迁移
   // 判断标准：files 表为空 且 无 files_fts
   if (current === null) {
-    const fileCount = (
-      db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }
-    ).c;
+    const fileCount = (db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }).c;
     const ftsExists = db
       .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'`)
       .get();
@@ -632,9 +627,7 @@ export function setStoredEmbeddingDimensions(db: Database.Database, dimensions: 
  * - 'done'：迁移完成，LanceDB chunks 表使用新 schema
  * - 'aborted'：抽样校验失败，等待人工干预（CRIT-C）
  */
-export function getLanceDbMigrationState(
-  db: Database.Database,
-): LanceDbMigrationState | null {
+export function getLanceDbMigrationState(db: Database.Database): LanceDbMigrationState | null {
   const value = getMetadata(db, METADATA_KEY_LANCEDB_MIGRATION_STATE);
   if (value === 'pending' || value === 'done' || value === 'aborted') return value;
   return null;

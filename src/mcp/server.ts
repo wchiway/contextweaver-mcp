@@ -26,7 +26,9 @@ function resolveServerVersion(): string {
     const pkgPath = join(dir, 'package.json');
     if (existsSync(pkgPath)) {
       try {
-        return (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }).version ?? '0.0.0';
+        return (
+          (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }).version ?? '0.0.0'
+        );
       } catch {
         break;
       }

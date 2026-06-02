@@ -181,10 +181,7 @@ export class Indexer {
         stats.deleted = toDelete.length;
       } catch (err) {
         const error = err as { message?: string };
-        logger.error(
-          { error: error.message, count: toDelete.length },
-          '删除阶段失败，已标记重试',
-        );
+        logger.error({ error: error.message, count: toDelete.length }, '删除阶段失败，已标记重试');
         stats.errors += toDelete.length;
       }
     }
@@ -277,7 +274,11 @@ export class Indexer {
 
       // ===== 阶段 2: 批量获取 embeddings =====
       logger.info(
-        { batch: `${batchNum}/${totalBatches}`, texts: batchTexts.length, files: batchFiles.length },
+        {
+          batch: `${batchNum}/${totalBatches}`,
+          texts: batchTexts.length,
+          files: batchFiles.length,
+        },
         '批次 Embedding 开始',
       );
 
@@ -288,11 +289,18 @@ export class Indexer {
         const batchOnProgress = onProgress
           ? (_completed: number, _total: number) => {
               // 每个 embedding 子批次完成时报告全局进度
-              onProgress(completedChunks + Math.min(_completed * EMBED_BATCH_SIZE, batchTexts.length), totalChunks);
+              onProgress(
+                completedChunks + Math.min(_completed * EMBED_BATCH_SIZE, batchTexts.length),
+                totalChunks,
+              );
             }
           : undefined;
 
-        const results = await this.embeddingClient.embedBatch(batchTexts, EMBED_BATCH_SIZE, batchOnProgress);
+        const results = await this.embeddingClient.embedBatch(
+          batchTexts,
+          EMBED_BATCH_SIZE,
+          batchOnProgress,
+        );
         embeddings = results.map((r) => r.embedding);
       } catch (err) {
         const error = err as { message?: string; stack?: string };

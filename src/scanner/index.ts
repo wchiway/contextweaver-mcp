@@ -16,8 +16,8 @@ import {
   setStoredEmbeddingDimensions,
 } from '../db/index.js';
 import { closeAllIndexers, getIndexer } from '../indexer/index.js';
-import { logger } from '../utils/logger.js';
 import { invalidateAllExpanderCaches } from '../search/GraphExpander.js';
+import { logger } from '../utils/logger.js';
 import { closeAllVectorStores } from '../vectorStore/index.js';
 import { crawl } from './crawler.js';
 import { initFilter } from './filter.js';

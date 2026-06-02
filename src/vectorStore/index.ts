@@ -315,9 +315,7 @@ export class VectorStore {
       // 策略：先按 (path, newHash) 精确删除（覆盖孤儿），再 add 新数据，
       // 最后按 path AND != newHash 清理任何更旧的版本（兜底）。
       if (this.table && batch.length > 0) {
-        await this.deleteFilesByHash(
-          batch.map((f) => ({ path: f.path, hash: f.hash })),
-        );
+        await this.deleteFilesByHash(batch.map((f) => ({ path: f.path, hash: f.hash })));
       }
 
       // 1. 批量插入本批次的 records
@@ -350,10 +348,10 @@ export class VectorStore {
     if (!this.table) return [];
 
     // LanceDB 0.22 query().select() 支持列投影
-    const rows = (await this.table
-      .query()
-      .select(['file_path', 'file_hash'])
-      .toArray()) as Array<{ file_path: string; file_hash: string }>;
+    const rows = (await this.table.query().select(['file_path', 'file_hash']).toArray()) as Array<{
+      file_path: string;
+      file_hash: string;
+    }>;
 
     const seen = new Set<string>();
     const result: Array<{ path: string; hash: string }> = [];

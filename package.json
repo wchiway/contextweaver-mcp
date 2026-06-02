@@ -27,6 +27,8 @@
     "build:release": "tsup src/index.ts --format esm --dts --out-dir dist --clean",
     "dev": "tsup src/index.ts --format esm --dts --out-dir dist --sourcemap --watch",
     "fmt": "biome check --write ./src",
+    "lint": "biome check ./src",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

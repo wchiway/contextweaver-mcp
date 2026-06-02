@@ -12,10 +12,10 @@ import { getEmbeddingConfig } from '../config.js';
 import { initDb } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { type ChunkRecord, getVectorStore, type VectorStore } from '../vectorStore/index.js';
+import { ChunkContentLoader } from './ChunkContentLoader.js';
 import { createResolvers, type ImportResolver } from './resolvers/index.js';
 import type { ScoredChunk, SearchConfig } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
-import { ChunkContentLoader } from './ChunkContentLoader.js';
 
 // ===========================================
 // 类型定义
