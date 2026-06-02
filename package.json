@@ -3,12 +3,12 @@
   "version": "1.5.0",
   "description": "A context weaving tool for LLMs",
   "license": "MIT",
-  "author": "hsingjui",
+  "author": "chiway",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hsingjui/ContextWeaver.git"
+    "url": "git+https://github.com/wchiway/contextweaver-mcp.git"
   },
-  "homepage": "https://github.com/hsingjui/ContextWeaver#readme",
+  "homepage": "https://github.com/wchiway/contextweaver-mcp#readme",
   "private": false,
   "type": "module",
   "bin": {
