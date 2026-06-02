@@ -36,10 +36,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Biome 检查为非阻塞：当前代码库存在少量预存格式/死代码告警，先报告不拦截
       - name: Lint (Biome)
         run: pnpm run lint
-        continue-on-error: true
 
       - name: Typecheck
         run: pnpm run typecheck

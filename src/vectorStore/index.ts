@@ -115,12 +115,10 @@ export function sampleCheckDisplayCode(
 export class VectorStore {
   private db: lancedb.Connection | null = null;
   private table: lancedb.Table | null = null;
-  private projectId: string;
   private dbPath: string;
   private vectorDim: number;
 
   constructor(projectId: string, vectorDim = 1024, dbPathOverride?: string) {
-    this.projectId = projectId;
     this.dbPath = dbPathOverride ?? path.join(BASE_DIR, projectId, 'vectors.lance');
     this.vectorDim = vectorDim;
   }

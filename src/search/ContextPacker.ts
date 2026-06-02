@@ -9,11 +9,9 @@ import type Database from 'better-sqlite3';
 import type { ScoredChunk, SearchConfig, Segment } from './types.js';
 
 export class ContextPacker {
-  private projectId: string;
   private config: SearchConfig;
 
-  constructor(projectId: string, config: SearchConfig) {
-    this.projectId = projectId;
+  constructor(_projectId: string, config: SearchConfig) {
     this.config = config;
   }
 
