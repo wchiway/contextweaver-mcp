@@ -1,152 +1,218 @@
 # ContextWeaver
 
 <p align="center">
-  <strong>🧵 为 AI Agent 精心编织的代码库上下文引擎</strong>
+  <strong>🧵 A codebase context engine woven for AI agents</strong>
 </p>
 
 <p align="center">
   <em>Semantic Code Retrieval for AI Agents — Hybrid Search • Graph Expansion • Token-Aware Packing</em>
 </p>
 
----
-
-**ContextWeaver** 是一个专为 AI 代码助手设计的语义检索引擎，采用混合搜索（向量 + 词法）、智能上下文扩展和 Token 感知打包策略，为 LLM 提供精准、相关且上下文完整的代码片段。
-
 <p align="center">
-  <img src="docs/architecture.png" alt="ContextWeaver 架构概览" width="800" />
+  <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-## ✨ 核心特性
+---
 
-### 🔍 混合检索引擎
-- **向量召回 (Vector Retrieval)**：基于语义相似度的深度理解
-- **词法召回 (Lexical/FTS)**：精确匹配函数名、类名等技术术语
-- **RRF 融合 (Reciprocal Rank Fusion)**：智能融合多路召回结果
+**ContextWeaver** is a semantic retrieval engine purpose-built for AI coding assistants. It combines hybrid search (vector + lexical), intelligent context expansion, and token-aware packing to deliver precise, relevant, and context-complete code snippets to LLMs.
 
-### 🧠 AST 语义分片
-- **Tree-sitter 解析**：支持 TypeScript、JavaScript、Python、Go、Java、Rust、C、C++、C# 等语言
-- **Dual-Text 策略**：`displayCode` 用于展示，`vectorText` 用于 Embedding
-- **Gap-Aware 合并**：智能处理代码间隙，保持语义完整性
-- **Breadcrumb 注入**：向量文本包含层级路径，提升检索召回率
-- **UTF-16 字符域归一**：在写入 metadata 前用 `SourceAdapter.toCharOffset` 统一偏移，避免多字节字符切片错位（v1.4.0+）
+<p align="center">
+  <img src="docs/architecture.png" alt="ContextWeaver architecture overview" width="800" />
+</p>
 
-### 📊 三阶段上下文扩展
-- **E1 邻居扩展**：同文件前后相邻 chunks，保证代码块完整性
-- **E2 面包屑补全**：同一类/函数下的其他方法，理解整体结构
-- **E3 Import 解析**：跨文件依赖追踪（可配置开关）
+## ✨ Core Features
 
-### 🎯 智能截断策略 (Smart TopK)
-- **Anchor & Floor**：动态阈值 + 绝对下限双保险
-- **Delta Guard**：防止 Top1 outlier 场景的误判
-- **Safe Harbor**：前 N 个结果只检查下限，保证基本召回
+### 🔍 Hybrid Retrieval Engine
+- **Vector Retrieval**: deep semantic understanding via similarity
+- **Lexical Retrieval (FTS)**: exact matching for function names, class names, and other technical terms
+- **RRF Fusion (Reciprocal Rank Fusion)**: intelligently merges multiple recall channels
 
-### 🔌 MCP 原生支持
-- **MCP Server 模式**：一键启动 Model Context Protocol 服务端
-- **意图与术语分离**：LLM 友好的 API 设计
-- **自动索引**：首次查询自动触发索引，增量更新透明无感
+### 🧠 AST Semantic Chunking
+- **Tree-sitter parsing**: supports TypeScript, JavaScript, Python, Go, Java, Rust, C, C++, C#, and more
+- **Dual-Text strategy**: `displayCode` for presentation, `vectorText` for embedding
+- **Gap-Aware merging**: handles code gaps intelligently while preserving semantic integrity
+- **Breadcrumb injection**: vector text carries hierarchical paths to boost recall
+- **UTF-16 character-domain normalization**: offsets are unified via `SourceAdapter.toCharOffset` before writing metadata, preventing multi-byte character slicing errors (v1.4.0+)
 
-### 🛡️ Crash-Safe 数据架构 (v1.4.0+)
-- **正文唯一源**：LanceDB 仅存向量与定位元数据，正文回查 `files.content`，索引体积降低 30-50%
-- **跨库事务补偿**：LanceDB → FTS+outbox → SQLite mark 三阶段写入，任一失败自动回滚或重放
-- **迁移状态机**：`pending/done/aborted` 三态持久化，崩溃恢复自动重建
-- **跨进程互斥**：advisory lock 防止 MCP server 与 CLI 并发触发 LanceDB 迁移
-- **chunk_id 去重**：写入前预删除，防止 retry 场景产生重复行
+### 📊 Three-Stage Context Expansion
+- **E1 Neighbor expansion**: adjacent chunks within the same file, preserving block completeness
+- **E2 Breadcrumb completion**: sibling methods under the same class/function for structural understanding
+- **E3 Import resolution**: cross-file dependency tracking (configurable toggle)
 
-## 📦 快速开始
+### 🎯 Smart TopK Cutoff
+- **Anchor & Floor**: dynamic threshold plus an absolute floor as dual safeguards
+- **Delta Guard**: prevents misjudgment in Top1-outlier scenarios
+- **Safe Harbor**: the first N results only check the floor, guaranteeing baseline recall
 
-### 环境要求
+### 🔌 Native MCP Support
+- **MCP Server mode**: launch a Model Context Protocol server with one command
+- **Multi-tool granularity** (v1.5.0+): beyond core semantic retrieval, adds dedicated tools for structure browsing, symbol references, symbol definitions, and statistics
+- **Intent/term separation**: an LLM-friendly API design
+- **Auto-indexing**: the first query triggers indexing automatically; incremental updates are transparent
+
+### ⚡ Query Cache & File Watching (v1.5.0+)
+- **Query cache (QueryCache)**: in-process per-project LRU cache (50 entries by default); a hit skips the entire vector recall / rerank / expansion pipeline
+- **Automatic cache invalidation**: the cache key is composed of `normalized query + projectId + index version + search-config fingerprint`, so it invalidates automatically after an index update or config change — stale results are never returned
+- **Watch mode**: `contextweaver watch` watches the filesystem and triggers incremental indexing automatically, with debouncing (500ms by default) and scan de-duplication (no concurrent scans)
+
+### 📈 Statistics & Observability (v1.5.0+)
+- **Three metric groups**: indexing process, search quality/behavior, health/consistency
+- **Dual exits**: `contextweaver stats` CLI (with `--json`) plus the MCP `stats` tool
+- **Consistency diagnostics**: automatically detects abnormal migration state, `pending_marks` backlog, missing vector rows, and more — with suggested fixes
+
+### 🛡️ Crash-Safe Data Architecture (v1.4.0+)
+- **Single source of truth for content**: LanceDB stores only vectors and locating metadata; content is read back from `files.content`, reducing index size by 30–50%
+- **Cross-store transactional compensation**: three-stage write LanceDB → FTS+outbox → SQLite mark, with automatic rollback or replay on any failure
+- **Migration state machine**: `pending/done/aborted` persisted, auto-rebuilt on crash recovery
+- **Cross-process mutual exclusion**: an advisory lock prevents the MCP server and CLI from triggering LanceDB migration concurrently
+- **chunk_id de-duplication**: pre-delete before write to avoid duplicate rows on retry
+
+## 📦 Quick Start
+
+### Requirements
 
 - Node.js >= 20
-- pnpm (推荐) 或 npm
+- pnpm (recommended) or npm
 
-### 安装
+### Installation
 
 ```bash
-# 全局安装
+# Global install
 npm install -g @chiway/contextweaver
 
-# 或使用 pnpm
+# Or with pnpm
 pnpm add -g @chiway/contextweaver
 ```
 
-### 初始化配置
+### Initialize Configuration
 
 ```bash
-# 初始化配置文件（创建 ~/.contextweaver/.env）
+# Create the config file (~/.contextweaver/.env)
 contextweaver init
-# 或简写
+# Or the short alias
 cw init
 ```
 
-编辑 `~/.contextweaver/.env`，填入你的 API Key：
+Edit `~/.contextweaver/.env` and fill in your API keys:
 
 ```bash
-# Embedding API 配置（必需）
+# Embedding API config (required)
 EMBEDDINGS_API_KEY=your-api-key-here
 EMBEDDINGS_BASE_URL=https://api.siliconflow.cn/v1/embeddings
 EMBEDDINGS_MODEL=BAAI/bge-m3
 EMBEDDINGS_MAX_CONCURRENCY=10
 EMBEDDINGS_DIMENSIONS=1024
 
-# Reranker 配置（必需）
+# Reranker config (required)
 RERANK_API_KEY=your-api-key-here
 RERANK_BASE_URL=https://api.siliconflow.cn/v1/rerank
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_TOP_N=20
 
-# 忽略模式（可选，逗号分隔）
+# Search parameters (optional, override built-in defaults)
+CW_SEARCH_WVEC=0.6
+CW_SEARCH_WLEX=0.4
+CW_SEARCH_RERANK_TOP_N=10
+CW_SEARCH_MAX_TOTAL_CHARS=48000
+CW_SEARCH_VECTOR_TOP_K=80
+CW_SEARCH_SMART_MAX_K=8
+CW_SEARCH_IMPORT_FILES_PER_SEED=3
+
+# Ignore patterns (optional, comma-separated)
 # IGNORE_PATTERNS=.venv,node_modules
 ```
 
-### 索引代码库
+### Index a Codebase
 
 ```bash
-# 在代码库根目录执行
+# Run from the codebase root
 contextweaver index
 
-# 指定路径
+# Specify a path
 contextweaver index /path/to/your/project
 
-# 强制重新索引
+# Force a full re-index
 contextweaver index --force
 ```
 
-### 本地搜索
+### Watch Mode (v1.5.0+)
 
 ```bash
-# 语义搜索
-cw search --information-request "用户认证流程是如何实现的？"
+# Watch for file changes and auto-index incrementally (Ctrl+C to stop)
+contextweaver watch
 
-# 带精确术语
-cw search --information-request "数据库连接逻辑" --technical-terms "DatabasePool,Connection"
+# Specify a path and debounce window (ms)
+contextweaver watch /path/to/project --debounce 800
 ```
 
-### 启动 MCP 服务器
+`watch` runs one full incremental scan on startup, then listens to filesystem events; changes trigger a de-duplicated scan within the debounce window, and paths excluded by ignore rules never trigger a scan.
+
+### Local Search
 
 ```bash
-# 启动 MCP 服务端（供 Claude 等 AI 助手使用）
+# Semantic search
+cw search --information-request "How is the user authentication flow implemented?"
+
+# With exact terms
+cw search --information-request "Database connection logic" --technical-terms "DatabasePool,Connection"
+```
+
+### Structure Browsing & Symbol Lookup (v1.5.0+)
+
+The following commands are CLI mirrors of MCP tools, with zero Embedding API cost:
+
+```bash
+# List indexed files (supports glob / language / count filters)
+contextweaver list-files --glob "src/**/*.ts" --language typescript --max-results 100
+
+# Look up a symbol definition
+contextweaver definition SearchService --hint-path src/search
+
+# Look up symbol references
+contextweaver references handleStats --exclude-definition
+```
+
+### Statistics (v1.5.0+)
+
+```bash
+# Human-readable stats report
+contextweaver stats
+
+# JSON output (for scripting)
+contextweaver stats --json
+
+# Specify a project path
+contextweaver stats --path /path/to/project
+```
+
+### Start the MCP Server
+
+```bash
+# Launch the MCP server (for use by Claude and other AI assistants)
 contextweaver mcp
 ```
 
-### 索引管理 (v1.4.0+)
+### Index Management (v1.4.0+)
 
 ```bash
-# 查看 LanceDB 迁移状态
+# Show LanceDB migration state
 contextweaver migrate
 
-# 解除 aborted 状态：清空 LanceDB 并触发全量重建
-# 触发时机：抽样校验失败后 Indexer 拒绝写入；运行此命令后再次 index 即可
+# Clear the aborted state: wipe LanceDB and trigger a full rebuild
+# Triggered when: the Indexer refuses to write after sampling validation fails;
+# run this, then index again.
 contextweaver migrate --reset
 
-# 指定项目路径
+# Specify a project path
 contextweaver migrate --path /path/to/project
 ```
 
-## 🔧 MCP 集成配置
+## 🔧 MCP Integration
 
-### Claude Desktop 配置
+### Claude Desktop Configuration
 
-在 Claude Desktop 的配置文件中添加：
+Add the following to your Claude Desktop config file:
 
 ```json
 {
@@ -159,25 +225,62 @@ contextweaver migrate --path /path/to/project
 }
 ```
 
-### MCP 工具说明
+### MCP Tools Overview (v1.5.0+)
 
-ContextWeaver 提供一个核心 MCP 工具：`codebase-retrieval`
+ContextWeaver exposes 5 MCP tools, following a layered design of "semantic retrieval first, structure browsing second":
 
-#### 参数说明
+| Tool | Purpose | Embedding cost |
+|------|---------|----------------|
+| `codebase-retrieval` | **Primary tool**: hybrid semantic + exact-match retrieval | Yes |
+| `list-files` | List indexed file structure (path/language/size) | No |
+| `find-references` | Find heuristic text references to a symbol | No |
+| `get-symbol-definition` | Find likely definition blocks for a symbol | No |
+| `stats` | Index/search/health statistics | No |
 
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `repo_path` | string | ✅ | 代码库根目录的绝对路径 |
-| `information_request` | string | ✅ | 自然语言形式的语义意图描述 |
-| `technical_terms` | string[] | ❌ | 精确技术术语（类名、函数名等） |
+#### `codebase-retrieval` Parameters
 
-#### 设计理念
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_path` | string | ✅ | Absolute path to the repository root |
+| `information_request` | string | ✅ | The semantic intent in natural language |
+| `technical_terms` | string[] | ❌ | Exact technical terms (class/function names, etc.) |
 
-- **意图与术语分离**：`information_request` 描述「做什么」，`technical_terms` 过滤「叫什么」
-- **同文件上下文优先**：默认提供同文件上下文，跨文件探索由 Agent 自主发起
-- **回归代理本能**：工具只负责定位，跨文件探索由 Agent 按需触发
+#### `list-files` Parameters
 
-## 🏗️ 架构设计
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_path` | string | ✅ | Absolute path to the repository root |
+| `glob` | string | ❌ | Glob pattern to filter paths |
+| `language` | string | ❌ | Language filter (matched against `files.language`) |
+| `max_results` | number | ❌ | Max files to return (default 200) |
+
+#### `find-references` Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_path` | string | ✅ | Absolute path to the repository root |
+| `symbol` | string | ✅ | Exact symbol name |
+| `exclude_definition` | boolean | ❌ | Exclude chunks whose breadcrumb tail matches the symbol name |
+| `max_results` | number | ❌ | Max references to return (default 50) |
+
+#### `get-symbol-definition` Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_path` | string | ✅ | Absolute path to the repository root |
+| `symbol` | string | ✅ | Exact symbol name to resolve |
+| `hint_path` | string | ❌ | Preferred path to disambiguate same-name definitions |
+| `max_results` | number | ❌ | Max definitions to return (default 3) |
+
+> **Note**: `find-references` and `get-symbol-definition` are heuristic text lookups over indexed chunks, not compiler-accurate navigation. For exhaustive raw text matching, use `grep` outside MCP.
+
+#### Design Philosophy
+
+- **Intent/term separation**: `information_request` describes "what to do", `technical_terms` filters "what it's called"
+- **Same-file context first**: same-file context is provided by default; cross-file exploration is initiated by the agent
+- **Return to agent instincts**: the tool only locates; cross-file exploration is triggered by the agent on demand
+
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TB
@@ -187,9 +290,11 @@ flowchart TB
     end
 
     subgraph Search["SearchService"]
+        QC[QueryCache<br/>LRU]
         VR[Vector Retrieval]
         LR[Lexical Retrieval]
         RRF[RRF Fusion + Rerank]
+        QC -.cache hit.-> CP
         VR --> RRF
         LR --> RRF
     end
@@ -216,77 +321,89 @@ flowchart TB
     Index --> Storage
 ```
 
-### 核心模块说明
+### Core Modules
 
-| 模块 | 职责 |
-|------|------|
-| **SearchService** | 混合搜索核心，协调向量/词法召回、RRF 融合、Rerank 精排 |
-| **GraphExpander** | 上下文扩展器，执行 E1/E2/E3 三阶段扩展策略 |
-| **ContextPacker** | 上下文打包器，负责段落合并和 Token 预算控制 |
-| **ChunkContentLoader** | 按 `(path, start_index, end_index)` 从 `files.content` 批量切片（v1.4.0+） |
-| **VectorStore** | LanceDB 适配层，仅暴露纯 vector 操作 |
-| **Database (SQLite)** | 元数据存储 + FTS5 全文索引，schema_version=3 |
-| **Bootstrap** | 跨库初始化协调器：pending_marks 重放 + LanceDB schema 迁移（v1.4.0+） |
-| **SemanticSplitter** | AST 语义分片器，基于 Tree-sitter 解析，写入时统一到 UTF-16 字符域 |
+| Module | Responsibility |
+|--------|----------------|
+| **SearchService** | Hybrid search core: coordinates vector/lexical recall, RRF fusion, rerank; integrates QueryCache |
+| **QueryCache** | Per-project in-process LRU cache (v1.5.0+); a hit skips the entire retrieval pipeline |
+| **GraphExpander** | Context expander: runs the E1/E2/E3 three-stage expansion strategy |
+| **ContextPacker** | Context packer: segment merging and token budget control |
+| **ChunkContentLoader** | Slices `files.content` by `(path, start_index, end_index)` (v1.4.0+) |
+| **VectorStore** | LanceDB adapter; exposes pure vector operations only |
+| **Database (SQLite)** | Metadata storage + FTS5 full-text index + statistics counters, schema_version=3 |
+| **Bootstrap** | Cross-store init coordinator: pending_marks replay + LanceDB schema migration (v1.4.0+) |
+| **SemanticSplitter** | AST semantic chunker (Tree-sitter); normalizes offsets to the UTF-16 character domain on write |
+| **Watcher** | File-watch coordinator (v1.5.0+): debounce + scan de-duplication + ignore filtering |
+| **Stats** | Statistics aggregation layer (v1.5.0+): combines index/search/health metrics |
 
-### 数据架构 (v1.4.0+)
+### Data Architecture (v1.4.0+)
 
 ```
 ~/.contextweaver/<projectId>/
 ├── index.db                 # SQLite
-│   ├── files                # 文件元数据 + 完整正文（content 列，文本切片唯一来源）
-│   ├── files_fts            # 外部内容表，倒排索引指向 files
-│   ├── chunks_fts           # chunk 级倒排索引，per-file 整体替换
+│   ├── files                # File metadata + full content (content column, the only source for text slicing)
+│   ├── files_fts            # External-content table, inverted index pointing to files
+│   ├── chunks_fts           # Chunk-level inverted index, per-file wholesale replacement
 │   ├── metadata             # schema_version / lancedb_migration_state / lock
-│   └── pending_marks        # outbox：vector_index_hash 标记失败时启动重放
-└── vectors.lance/           # LanceDB chunks 表（仅向量 + 定位元数据，不存正文）
+│   ├── stats                # Cumulative index/search counters (v1.5.0+)
+│   └── pending_marks        # Outbox: replayed when a vector_index_hash mark failed
+└── vectors.lance/           # LanceDB chunks table (vectors + locating metadata only, no content)
 ```
 
-**关键不变量**：
-- 正文唯一源是 `files.content`；`ChunkContentLoader` 用 `start_index/end_index` 切片（与 `displayCode` 同源）
-- 所有 LanceDB 偏移字段都在 UTF-16 字符域，多字节文件不会切错
-- 跨库写入顺序：LanceDB → (FTS + outbox 单事务) → SQLite mark + 清 outbox
-- LanceDB 迁移状态 `pending/done/aborted` 持久化，跨进程用 advisory lock 互斥
+**Key invariants**:
+- The single source of truth for content is `files.content`; `ChunkContentLoader` slices via `start_index/end_index` (same source as `displayCode`)
+- All LanceDB offset fields live in the UTF-16 character domain; multi-byte files are never sliced incorrectly
+- Cross-store write order: LanceDB → (FTS + outbox single transaction) → SQLite mark + clear outbox
+- LanceDB migration state `pending/done/aborted` is persisted, with cross-process mutual exclusion via an advisory lock
+- The query cache key is bound to the index version and search-config fingerprint; it invalidates on any index or config change
 
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 contextweaver/
 ├── src/
-│   ├── index.ts              # CLI 入口（init / index / search / mcp / migrate）
-│   ├── config.ts             # 配置管理（环境变量）
-│   ├── api/                  # 外部 API 封装
+│   ├── index.ts              # CLI entry (init / index / watch / search / mcp / migrate / stats)
+│   ├── config.ts             # Config management (environment variables)
+│   ├── defaultEnv.ts         # Default .env template
+│   ├── cli/
+│   │   └── mirrorCommands.ts # CLI mirrors of MCP tools (list-files / definition / references)
+│   ├── api/                  # External API wrappers
 │   │   ├── embedding.ts      # Embedding API
 │   │   └── reranker.ts       # Reranker API
-│   ├── chunking/             # 语义分片
-│   │   ├── SemanticSplitter.ts   # AST 语义分片器
-│   │   ├── SourceAdapter.ts      # 源码适配器（UTF-16/UTF-8 域归一）
-│   │   ├── LanguageSpec.ts       # 语言规范定义
-│   │   ├── ParserPool.ts         # Tree-sitter 解析器池
-│   │   └── types.ts              # 分片类型定义
-│   ├── scanner/              # 文件扫描
-│   │   ├── crawler.ts        # 文件系统遍历
-│   │   ├── processor.ts      # 文件处理
-│   │   ├── filter.ts         # 过滤规则
-│   │   ├── hash.ts           # 文件 hash
-│   │   └── language.ts       # 语言识别
-│   ├── indexer/              # 索引器
-│   │   └── index.ts          # 三阶段事务（LanceDB → FTS+outbox → SQLite mark）
-│   ├── vectorStore/          # 向量存储
-│   │   └── index.ts          # LanceDB 适配层（纯 vector 操作）
-│   ├── db/                   # 数据库
-│   │   ├── index.ts          # SQLite + FTS5 + pending_marks + 迁移状态机
-│   │   └── bootstrap.ts      # 跨库初始化协调（v1.4.0+）
-│   ├── search/               # 搜索服务
-│   │   ├── SearchService.ts      # 核心搜索服务
-│   │   ├── GraphExpander.ts      # 上下文扩展器
-│   │   ├── ContextPacker.ts      # 上下文打包器
-│   │   ├── ChunkContentLoader.ts # 按 (path, start_index, end_index) 切片（v1.4.0+）
-│   │   ├── fts.ts                # 全文搜索（per-file 整体替换）
-│   │   ├── config.ts             # 搜索配置
-│   │   ├── types.ts              # 类型定义
-│   │   ├── utils.ts              # token overlap 评分
-│   │   └── resolvers/            # 多语言 Import 解析器
+│   ├── chunking/             # Semantic chunking
+│   │   ├── SemanticSplitter.ts   # AST semantic chunker
+│   │   ├── SourceAdapter.ts      # Source adapter (UTF-16/UTF-8 domain normalization)
+│   │   ├── LanguageSpec.ts       # Language spec definitions
+│   │   ├── ParserPool.ts         # Tree-sitter parser pool
+│   │   └── types.ts              # Chunking type definitions
+│   ├── scanner/              # File scanning
+│   │   ├── index.ts          # Scan orchestration
+│   │   ├── crawler.ts        # Filesystem traversal
+│   │   ├── processor.ts      # File processing
+│   │   ├── watcher.ts        # File-watch coordinator (v1.5.0+)
+│   │   ├── filter.ts         # Filter rules
+│   │   ├── hash.ts           # File hash
+│   │   └── language.ts       # Language detection
+│   ├── indexer/              # Indexer
+│   │   └── index.ts          # Three-stage transaction (LanceDB → FTS+outbox → SQLite mark)
+│   ├── vectorStore/          # Vector storage
+│   │   └── index.ts          # LanceDB adapter (pure vector operations)
+│   ├── db/                   # Database
+│   │   ├── index.ts          # SQLite + FTS5 + pending_marks + migration state machine + stats counters
+│   │   └── bootstrap.ts      # Cross-store init coordinator (v1.4.0+)
+│   ├── search/               # Search service
+│   │   ├── SearchService.ts      # Core search service (cache-integrated)
+│   │   ├── QueryCache.ts         # Per-project LRU query cache (v1.5.0+)
+│   │   ├── GraphExpander.ts      # Context expander
+│   │   ├── ContextPacker.ts      # Context packer
+│   │   ├── ChunkContentLoader.ts # Slices by (path, start_index, end_index) (v1.4.0+)
+│   │   ├── fts.ts                # Full-text search (per-file wholesale replacement)
+│   │   ├── config.ts             # Search default config + value bounds
+│   │   ├── loadConfig.ts         # Env-var overrides + config fingerprint (v1.5.0+)
+│   │   ├── types.ts              # Type definitions
+│   │   ├── utils.ts              # Token-overlap scoring
+│   │   └── resolvers/            # Multi-language import resolvers
 │   │       ├── JsTsResolver.ts
 │   │       ├── PythonResolver.ts
 │   │       ├── GoResolver.ts
@@ -294,85 +411,118 @@ contextweaver/
 │   │       ├── RustResolver.ts
 │   │       ├── CppResolver.ts
 │   │       └── CSharpResolver.ts
-│   ├── mcp/                  # MCP 服务端
-│   │   ├── server.ts         # MCP 服务器实现
-│   │   ├── main.ts           # MCP 入口
+│   ├── stats/                # Statistics aggregation layer (v1.5.0+)
+│   │   └── index.ts          # Aggregates and renders index/search/health metrics
+│   ├── mcp/                  # MCP server
+│   │   ├── server.ts         # MCP server implementation (registers 5 tools)
+│   │   ├── main.ts           # MCP entry
 │   │   └── tools/
-│   │       └── codebaseRetrieval.ts  # 代码检索工具
-│   └── utils/                # 工具函数
-│       ├── logger.ts         # 日志系统
-│       ├── encoding.ts       # 编码检测
-│       └── lock.ts           # 文件锁
-├── tests/                    # 单测 + 集成测试（109 测试用例）
-│   ├── chunking/             # SourceAdapter / 分片
-│   ├── db/                   # 迁移、outbox、advisory lock
-│   ├── indexer/              # 事务补偿、GC、aborted 守卫
-│   ├── integration/          # 真实 LanceDB 端到端
-│   ├── search/               # FTS、ChunkContentLoader、Packer
-│   └── vectorStore/          # chunk_id 去重、抽样校验
+│   │       ├── index.ts                 # Tool registry
+│   │       ├── shared.ts                # Shared tool logic
+│   │       ├── codebaseRetrieval.ts     # Code retrieval tool
+│   │       ├── listFiles.ts             # File structure browsing (v1.5.0+)
+│   │       ├── findReferences.ts        # Symbol reference lookup (v1.5.0+)
+│   │       ├── getSymbolDefinition.ts   # Symbol definition lookup (v1.5.0+)
+│   │       └── stats.ts                 # Statistics tool (v1.5.0+)
+│   └── utils/                # Utilities
+│       ├── logger.ts         # Logging system
+│       ├── encoding.ts       # Encoding detection
+│       └── lock.ts           # File lock
+├── tests/                    # Unit + integration tests (28 test files, 156 test cases)
+│   ├── chunking/             # SourceAdapter / chunking
+│   ├── cli/                  # mirrorCommands
+│   ├── db/                   # migration, outbox, advisory lock, index-version
+│   ├── indexer/              # transaction compensation, GC, aborted guard
+│   ├── integration/          # real LanceDB end-to-end
+│   ├── mcp/                  # list-files / find-references / get-symbol-definition / shared / tool registry
+│   ├── scanner/              # watcher / index-version
+│   ├── search/               # FTS, ChunkContentLoader, Packer, cache, loadConfig
+│   ├── stats/                # statistics aggregation
+│   └── vectorStore/          # chunk_id de-duplication, sampling validation
 ├── package.json
 └── tsconfig.json
 ```
 
-## ⚙️ 配置详解
+## ⚙️ Configuration Reference
 
-### 环境变量
+### Environment Variables
 
-| 变量名 | 必需 | 默认值 | 描述 |
-|--------|------|--------|------|
-| `EMBEDDINGS_API_KEY` | ✅ | - | Embedding API 密钥 |
-| `EMBEDDINGS_BASE_URL` | ✅ | - | Embedding API 地址 |
-| `EMBEDDINGS_MODEL` | ✅ | - | Embedding 模型名称 |
-| `EMBEDDINGS_MAX_CONCURRENCY` | ❌ | 10 | Embedding 并发数 |
-| `EMBEDDINGS_DIMENSIONS` | ❌ | 1024 | 向量维度 |
-| `RERANK_API_KEY` | ✅ | - | Reranker API 密钥 |
-| `RERANK_BASE_URL` | ✅ | - | Reranker API 地址 |
-| `RERANK_MODEL` | ✅ | - | Reranker 模型名称 |
-| `RERANK_TOP_N` | ❌ | 20 | Rerank 返回数量 |
-| `IGNORE_PATTERNS` | ❌ | - | 额外忽略模式 |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `EMBEDDINGS_API_KEY` | ✅ | - | Embedding API key |
+| `EMBEDDINGS_BASE_URL` | ✅ | - | Embedding API URL |
+| `EMBEDDINGS_MODEL` | ✅ | - | Embedding model name |
+| `EMBEDDINGS_MAX_CONCURRENCY` | ❌ | 10 | Embedding concurrency |
+| `EMBEDDINGS_DIMENSIONS` | ❌ | 1024 | Vector dimensions |
+| `RERANK_API_KEY` | ✅ | - | Reranker API key |
+| `RERANK_BASE_URL` | ✅ | - | Reranker API URL |
+| `RERANK_MODEL` | ✅ | - | Reranker model name |
+| `RERANK_TOP_N` | ❌ | 20 | Rerank return count |
+| `IGNORE_PATTERNS` | ❌ | - | Extra ignore patterns |
 
-### 搜索配置参数
+### Search Parameter Env Overrides (v1.5.0+)
+
+The following environment variables override built-in defaults; out-of-range values are automatically clamped to the valid interval. When only one of `wVec`/`wLex` is set, the other is automatically set to `1 - x`.
+
+| Variable | Default | Bounds | Description |
+|----------|---------|--------|-------------|
+| `CW_SEARCH_WVEC` | 0.6 | 0–1 | Vector weight (fusion stage) |
+| `CW_SEARCH_WLEX` | 0.4 | 0–1 | Lexical weight (complements `wVec`) |
+| `CW_SEARCH_RERANK_TOP_N` | 10 | 5–20 | Results kept after rerank |
+| `CW_SEARCH_MAX_TOTAL_CHARS` | 48000 | 20000–80000 | Token budget (in chars, ~12k tokens) |
+| `CW_SEARCH_VECTOR_TOP_K` | 80 | 40–200 | Vector recall candidates |
+| `CW_SEARCH_SMART_MAX_K` | 8 | 5–15 | Smart TopK hard upper bound |
+| `CW_SEARCH_IMPORT_FILES_PER_SEED` | 3 | 0–5 | E3 import files resolved per seed (0 disables cross-file expansion) |
+
+### Search Config Parameters (built-in defaults)
 
 ```typescript
 interface SearchConfig {
-  // === 召回阶段 ===
-  vectorTopK: number;        // 向量召回数量（默认 30）
-  vectorTopM: number;        // 送入融合的向量结果数（默认 30）
-  ftsTopKFiles: number;      // FTS 召回文件数（默认 15）
-  lexChunksPerFile: number;  // 每文件词法 chunks 数（默认 3）
-  lexTotalChunks: number;    // 词法总 chunks 数（默认 30）
+  // === Recall ===
+  vectorTopK: number;        // Vector recall candidates (default 80)
+  vectorTopM: number;        // Vectors kept after dedup (default 60)
+  ftsTopKFiles: number;      // FTS recall file count (default 20)
+  lexChunksPerFile: number;  // Lexical chunks per file (default 2)
+  lexTotalChunks: number;    // Total lexical chunks (default 40)
 
-  // === 融合阶段 ===
-  rrfK0: number;             // RRF 平滑常数（默认 60）
-  wVec: number;              // 向量权重（默认 1.0）
-  wLex: number;              // 词法权重（默认 0.5）
-  fusedTopM: number;         // 融合后送 rerank 数量（默认 40）
+  // === Fusion ===
+  rrfK0: number;             // RRF smoothing constant (default 20)
+  wVec: number;              // Vector weight (default 0.6)
+  wLex: number;              // Lexical weight (default 0.4)
+  fusedTopM: number;         // Candidates fed into rerank after fusion (default 60)
 
   // === Rerank ===
-  rerankTopN: number;        // Rerank 后保留数量（默认 10）
-  maxRerankChars: number;    // Rerank 文本最大字符数（默认 1200）
+  rerankTopN: number;        // Results kept after rerank (default 10)
+  maxRerankChars: number;    // Max chars per chunk sent to reranker (default 1000)
+  maxBreadcrumbChars: number;// Max chars for breadcrumb context (default 250)
+  headRatio: number;         // Head/tail ratio when truncating (default 0.67)
 
-  // === 扩展策略 ===
-  neighborHops: number;      // E1 邻居跳数（默认 2）
-  breadcrumbExpandLimit: number;  // E2 面包屑补全数（默认 3）
-  importFilesPerSeed: number;     // E3 每 seed 导入文件数（默认 0）
-  chunksPerImportFile: number;    // E3 每导入文件 chunks（默认 0）
+  // === Expansion ===
+  neighborHops: number;      // E1 neighbor hops (default 2)
+  breadcrumbExpandLimit: number;  // E2 breadcrumb completions (default 3)
+  importFilesPerSeed: number;     // E3 import files per seed (default 3)
+  chunksPerImportFile: number;    // E3 chunks per import file (default 3)
+
+  // === ContextPacker ===
+  maxSegmentsPerFile: number;     // Max non-contiguous segments per file (default 3)
+  maxTotalChars: number;          // Token budget (chars, default 48000)
 
   // === Smart TopK ===
-  enableSmartTopK: boolean;  // 启用智能截断（默认 true）
-  smartTopScoreRatio: number;     // 动态阈值比例（默认 0.5）
-  smartMinScore: number;          // 绝对下限（默认 0.25）
-  smartMinK: number;              // Safe Harbor 数量（默认 2）
-  smartMaxK: number;              // 硬上限（默认 15）
+  enableSmartTopK: boolean;       // Enable smart cutoff (default true)
+  smartTopScoreRatio: number;     // Dynamic threshold ratio (default 0.5)
+  smartTopScoreDeltaAbs: number;  // Max absolute drop from Top1 (default 0.25)
+  smartMinScore: number;          // Absolute floor (default 0.25)
+  smartMinK: number;              // Safe Harbor count (default 2)
+  smartMaxK: number;              // Hard upper bound (default 8)
 }
 ```
 
-## 🌍 多语言支持
+## 🌍 Multi-Language Support
 
-ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
+ContextWeaver natively supports AST parsing for the following languages via Tree-sitter:
 
-| 语言 | AST 解析 | Import 解析 | 文件扩展名 |
-|------|----------|-------------|-----------|
+| Language | AST Parsing | Import Resolution | Extensions |
+|----------|-------------|-------------------|------------|
 | TypeScript | ✅ | ✅ | `.ts`, `.tsx` |
 | JavaScript | ✅ | ✅ | `.js`, `.jsx`, `.mjs`, `.cjs` |
 | Python | ✅ | ✅ | `.py` |
@@ -383,109 +533,135 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
 | C++ | ✅ | ✅ | `.cpp`, `.cc`, `.cxx`, `.hpp` |
 | C# | ✅ | ✅ | `.cs` |
 
-其他语言会采用基于行的 Fallback 分片策略，仍可正常索引和搜索。
+Other languages fall back to line-based chunking and can still be indexed and searched normally.
 
-## 🔄 工作流程
+## 🔄 Workflows
 
-### 索引流程
-
-```
-0. Bootstrap   → pending_marks 重放 + LanceDB schema 迁移（首次启动）
-1. Crawler     → 遍历文件系统，过滤忽略项
-2. Processor   → 读取文件内容，计算 hash
-3. Splitter    → AST 解析，语义分片（偏移归一到 UTF-16 字符域）
-4. Indexer     → 批量 Embedding
-5. 阶段 4-6 伪事务：
-   ├─ LanceDB 写入（预删 (path, hash) 防重复 → add → 清旧版本）
-   ├─ FTS + outbox 单 SQLite 事务（失败回滚 LanceDB）
-   └─ SQLite mark + 清 outbox 单事务（失败时 outbox 保留，下次启动 replay）
-6. 末尾 GC     → 清理 LanceDB 孤儿 chunks（time budget 5s）
-```
-
-### 搜索流程
+### Indexing Flow
 
 ```
-1. Query Parse     → 解析查询，分离语义和术语
-2. Hybrid Recall   → 向量 + 词法双路召回
-3. RRF Fusion      → Reciprocal Rank Fusion 融合
-4. Rerank          → 交叉编码器精排
-5. Smart Cutoff    → 智能分数截断
-6. Graph Expand    → 邻居/面包屑/导入扩展
-7. Context Pack    → 段落合并，Token 预算
-8. Format Output   → 格式化返回给 LLM
+0. Bootstrap   → pending_marks replay + LanceDB schema migration (first launch)
+1. Crawler     → traverse the filesystem, filter ignored items
+2. Processor   → read file content, compute hash
+3. Splitter    → AST parse, semantic chunking (offsets normalized to UTF-16 char domain)
+4. Indexer     → batch embedding
+5. Stages 4-6 pseudo-transaction:
+   ├─ LanceDB write (pre-delete (path, hash) to avoid duplicates → add → clear old versions)
+   ├─ FTS + outbox single SQLite transaction (rolls back LanceDB on failure)
+   └─ SQLite mark + clear outbox single transaction (outbox kept on failure, replayed next launch)
+6. Trailing GC → clean up LanceDB orphan chunks (time budget 5s)
 ```
 
-## 📊 性能特性
+### Search Flow
 
-- **增量索引**：只处理变更文件，二次索引速度提升 10x+
-- **批量 Embedding**：自适应批次大小，支持并发控制
-- **速率限制恢复**：429 错误时自动退避，渐进恢复
-- **连接池复用**：Tree-sitter 解析器池化复用
-- **文件索引缓存**：GraphExpander 文件路径索引 lazy load
+```
+1. Query Parse     → parse the query, separate semantics from terms
+2. Cache Lookup    → return immediately on hit (v1.5.0+, key includes index version + config fingerprint)
+3. Hybrid Recall   → dual-channel vector + lexical recall
+4. RRF Fusion      → Reciprocal Rank Fusion
+5. Rerank          → cross-encoder reranking
+6. Smart Cutoff    → intelligent score cutoff
+7. Graph Expand    → neighbor/breadcrumb/import expansion
+8. Context Pack    → segment merging, token budget
+9. Cache Store     → write to cache (v1.5.0+)
+10. Format Output  → format and return to the LLM
+```
 
-## 🐛 日志与调试
+## 📊 Performance Characteristics
 
-日志文件位置：`~/.contextweaver/logs/app.YYYY-MM-DD.log`
+- **Query cache**: repeated queries hit the LRU cache, skipping the entire recall/rerank/expansion pipeline (v1.5.0+)
+- **Incremental indexing**: only changed files are processed; re-indexing is 10x+ faster
+- **Batch embedding**: adaptive batch size with concurrency control
+- **Rate-limit recovery**: automatic backoff on 429 errors, gradual recovery
+- **Connection pool reuse**: pooled Tree-sitter parsers
+- **File index caching**: lazy-loaded file-path index in GraphExpander
+- **Zero-cost metadata tools**: `list-files`/`find-references`/`get-symbol-definition` do not call the Embedding API (v1.5.0+)
 
-设置日志级别：
+## 📈 Statistics & Observability (v1.5.0+)
+
+`contextweaver stats` outputs three sections:
+
+- **Indexing process**: cumulative index run count, last index time, last-run snapshot (added/modified/deleted/unchanged/skipped/errors + vector index details)
+- **Search quality/behavior**: cumulative queries, cache hit rate, actual compute runs, plus average per-stage latency (retrieve / rerank / expand / pack) and average recalled seed count
+- **Health/consistency**: file count and total content size, LanceDB vector row count, embedding dimensions, index version, migration state, `pending_marks`, language breakdown
+
+When an abnormal migration state, `pending_marks` backlog, or missing vector rows are detected, the report appends **diagnostic warnings** with the corresponding fix commands. The `--json` output maps to `StatsReport` for scripts and monitoring systems.
+
+## 🐛 Logging & Debugging
+
+Log file location: `~/.contextweaver/logs/app.YYYY-MM-DD.log`
+
+Set the log level:
 
 ```bash
-# 开启 debug 日志
+# Enable debug logging
 LOG_LEVEL=debug contextweaver search --information-request "..."
 ```
 
-## 🚨 故障排查 (v1.4.0+)
+## 🚨 Troubleshooting (v1.4.0+)
 
-### LanceDB 迁移卡死 (`aborted` 状态)
+### LanceDB Migration Stuck (`aborted` state)
 
-**现象**：`contextweaver index` 报错 "LanceDB 处于 aborted 状态，拒绝写入以防止 schema 污染"。
+**Symptom**: `contextweaver index` errors with "LanceDB is in the aborted state, refusing to write to prevent schema pollution."
 
-**原因**：v1.4.0 升级时 LanceDB 旧索引中的 `display_code` 与当前 `files.content` 抽样差异 > 1%（通常发生在 chunk 偏移用 UTF-8 字节域旧索引上）。
+**Cause**: during the v1.4.0 upgrade, the old LanceDB index's `display_code` differs from the current `files.content` by >1% on sampling (typically on legacy indexes whose chunk offsets used the UTF-8 byte domain).
 
-**解决**：
+**Fix**:
 ```bash
-contextweaver migrate --reset   # 清空 LanceDB chunks 表 + 重置状态为 done
-contextweaver index             # 全量重建（新 schema）
+contextweaver migrate --reset   # Clear the LanceDB chunks table + reset state to done
+contextweaver index             # Full rebuild (new schema)
 ```
 
-### 跨进程迁移竞争
+You can also run `contextweaver stats` first to view diagnostic warnings and confirm the current migration state and `pending_marks` backlog.
 
-如果 MCP server 长驻 + 另一终端跑 `contextweaver index`，两进程会争抢迁移。v1.4.0 引入 10 分钟僵尸阈值的 advisory lock，自动让一个进程跳过迁移、另一个完成。
+### Cross-Process Migration Race
 
-如锁卡住（process kill -9 后），可手动清理：
+If the MCP server is long-running and another terminal runs `contextweaver index`, the two processes contend for migration. v1.4.0 introduces an advisory lock with a 10-minute zombie threshold, automatically letting one process skip migration while the other completes it.
+
+If the lock gets stuck (after `kill -9`), clear it manually:
 ```bash
 sqlite3 ~/.contextweaver/<projectId>/index.db \
   "DELETE FROM metadata WHERE key = 'lancedb_migration_lock';"
 ```
 
-### 重复 embedding 浪费
+### Wasted Duplicate Embeddings
 
-v1.4.0 已通过 `pending_marks` outbox 机制解决：FTS 写入成功但 vector_index_hash 标记失败时，下次启动自动 replay，不会触发重复 embedding。
+v1.4.0 solves this via the `pending_marks` outbox: when an FTS write succeeds but the vector_index_hash mark fails, it is replayed automatically on the next launch, avoiding duplicate embeddings.
 
-## 📜 版本历史
+### Search Results Don't Reflect Recent Changes
 
-- **v1.4.0** (2026-05): 数据架构与跨库一致性大修
-  - LanceDB chunks 表移除 `display_code/vector_text`，正文回查 `files.content`
-  - SemanticSplitter 偏移统一到 UTF-16 字符域
-  - schema_version 2 → 3，新增 `pending_marks` outbox + 三态迁移状态机
-  - 新增 `contextweaver migrate` CLI
-  - 跨进程 advisory lock 防止迁移竞争
-  - 109 个测试（含真实 LanceDB 端到端集成）
-- **v1.3.x**: 跨库写入事务性、scan 末尾自动 GC、files_fts 外部内容表
-- **v1.2.x**: 搜索管道优化、索引内存优化
-- **v1.1.x**: 智能 TopK 截断、Smart Cutoff
-- **v1.0.x**: 初始 release
+Confirm incremental indexing has run (or enable `contextweaver watch` for automatic increments). The query cache key is bound to the index version, so old cache entries invalidate automatically after an index update — no manual clearing needed.
 
-## 📄 开源协议
+## 📜 Version History
 
-本项目采用 MIT 许可证。
+- **v1.5.0** (2026-06): query cache, file watching, statistics, and multi-granularity MCP tools
+  - Added `QueryCache` (per-project LRU); the cache key includes the index version + search-config fingerprint and invalidates automatically
+  - Added `contextweaver watch` for file watching + debounced incremental indexing
+  - Added the `contextweaver stats` CLI (`--json`) and MCP `stats` tool: three metric groups + consistency diagnostics
+  - Added 3 MCP tools: `list-files` / `find-references` / `get-symbol-definition`, plus their CLI mirror commands
+  - Added `CW_SEARCH_*` environment variables to override search parameters (with bounds clamping)
+  - 28 test files / 156 test cases
+- **v1.4.0** (2026-05): data architecture and cross-store consistency overhaul
+  - LanceDB chunks table drops `display_code/vector_text`; content is read back from `files.content`
+  - SemanticSplitter offsets unified to the UTF-16 character domain
+  - schema_version 2 → 3; added the `pending_marks` outbox + tri-state migration state machine
+  - Added the `contextweaver migrate` CLI
+  - Cross-process advisory lock prevents migration races
+- **v1.3.x**: cross-store write transactionality, trailing auto-GC after scan, files_fts external-content table
+- **v1.2.x**: search pipeline optimization, indexing memory optimization
+- **v1.1.x**: Smart TopK cutoff, Smart Cutoff
+- **v1.0.x**: initial release
 
-## 🙏 致谢
+## 📄 License
 
-- [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) - 高性能语法解析
-- [LanceDB](https://lancedb.com/) - 嵌入式向量数据库
+This project is licensed under the MIT License.
+
+## 🙏 Acknowledgements
+
+- [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) - high-performance syntax parsing
+- [LanceDB](https://lancedb.com/) - embedded vector database
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
-- [SiliconFlow](https://siliconflow.cn/) - 推荐的 Embedding/Reranker API 服务
+- [SiliconFlow](https://siliconflow.cn/) - recommended Embedding/Reranker API service
 
 ---
 
