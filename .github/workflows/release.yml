@@ -77,7 +77,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         id: npmcheck
         run: |
-          if npm view @hsingjui/contextweaver@${{ steps.rel.outputs.ver }} version >/dev/null 2>&1; then
+          if npm view @chiway/contextweaver@${{ steps.rel.outputs.ver }} version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -101,7 +101,7 @@ jobs:
 
             ### Installation
             ```bash
-            npm install -g @hsingjui/contextweaver
+            npm install -g @chiway/contextweaver
             # or
-            pnpm add -g @hsingjui/contextweaver
+            pnpm add -g @chiway/contextweaver
             ```

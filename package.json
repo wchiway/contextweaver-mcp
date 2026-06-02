@@ -63,21 +63,5 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@keqingmoe/tree-sitter",
-      "better-sqlite3",
-      "esbuild",
-      "tree-sitter-c",
-      "tree-sitter-c-sharp",
-      "tree-sitter-cpp",
-      "tree-sitter-go",
-      "tree-sitter-java",
-      "tree-sitter-javascript",
-      "tree-sitter-python",
-      "tree-sitter-rust",
-      "tree-sitter-typescript"
-    ]
   }
 }
