@@ -3,3 +3,4 @@
  */
 
 export { codebaseRetrievalSchema, handleCodebaseRetrieval } from './codebaseRetrieval.js';
+export { handleStats, statsToolSchema } from './stats.js';

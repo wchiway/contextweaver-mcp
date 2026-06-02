@@ -13,7 +13,9 @@ import {
   getFilesNeedingVectorIndex,
   getStoredEmbeddingDimensions,
   incrementIndexVersion,
+  incrementStat,
   initDb,
+  setStatJson,
   setStoredEmbeddingDimensions,
 } from '../db/index.js';
 import { closeAllIndexers, getIndexer } from '../indexer/index.js';
@@ -298,8 +300,22 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
       }
     }
 
-    if (stats.added + stats.modified + stats.deleted > 0) {
+    const didWork = stats.added + stats.modified + stats.deleted > 0;
+    if (didWork) {
       incrementIndexVersion(db);
+    }
+
+    // 统计埋点（失败不影响索引主流程）
+    // total_runs 只计入真正做了工作的扫描（与 incrementIndexVersion 同条件），
+    // 避免 MCP 每次查询触发的空操作增量扫描虚增计数；last_run 仍反映最近一次扫描结果。
+    try {
+      if (didWork) {
+        incrementStat(db, 'stats.index.total_runs');
+      }
+      setStatJson(db, 'stats.index.last_run_json', stats);
+      setStatJson(db, 'stats.index.last_run_at', Date.now());
+    } catch (err) {
+      logger.warn({ error: (err as { message?: string }).message }, '索引统计埋点失败');
     }
 
     // 索引完成后使 GraphExpander 缓存失效，确保后续搜索使用最新文件列表

@@ -12,7 +12,7 @@ import type Database from 'better-sqlite3';
 import { getRerankerClient } from '../api/reranker.js';
 import { getEmbeddingConfig } from '../config.js';
 import { bootstrap } from '../db/bootstrap.js';
-import { getIndexVersion, initDb } from '../db/index.js';
+import { getIndexVersion, incrementStat, initDb } from '../db/index.js';
 import { getIndexer, type Indexer } from '../indexer/index.js';
 import { isDebugEnabled, logger } from '../utils/logger.js';
 import type { SearchResult as VectorSearchResult } from '../vectorStore/index.js';
@@ -78,6 +78,7 @@ export class SearchService {
     });
     const cached = getCachedContextPack(this.projectId, cacheKey);
     if (cached) {
+      this.recordSearchStats(db, { cacheHit: true });
       return cached;
     }
 
@@ -126,7 +127,38 @@ export class SearchService {
     };
 
     setCachedContextPack(this.projectId, cacheKey, pack);
+    this.recordSearchStats(db, { cacheHit: false, timingMs, seedCount: seeds.length });
     return pack;
+  }
+
+  /**
+   * 记录搜索统计埋点（静默吞错，不影响搜索主流程）
+   *
+   * 多个计数器用事务包裹，保证一次查询要么全写要么全不写。
+   */
+  private recordSearchStats(
+    db: Database.Database,
+    args: { cacheHit: boolean; timingMs?: Record<string, number>; seedCount?: number },
+  ): void {
+    try {
+      const tx = db.transaction(() => {
+        incrementStat(db, 'stats.search.total_queries');
+        if (args.cacheHit) {
+          incrementStat(db, 'stats.search.cache_hits');
+          return;
+        }
+        incrementStat(db, 'stats.search.compute_runs');
+        const t = args.timingMs ?? {};
+        incrementStat(db, 'stats.search.sum_retrieve_ms', Math.round(t.retrieve ?? 0));
+        incrementStat(db, 'stats.search.sum_rerank_ms', Math.round(t.rerank ?? 0));
+        incrementStat(db, 'stats.search.sum_expand_ms', Math.round(t.expand ?? 0));
+        incrementStat(db, 'stats.search.sum_pack_ms', Math.round(t.pack ?? 0));
+        incrementStat(db, 'stats.search.sum_seed_count', args.seedCount ?? 0);
+      });
+      tx();
+    } catch (err) {
+      logger.debug({ error: (err as { message?: string }).message }, '搜索统计埋点失败');
+    }
   }
 
   // 召回方法

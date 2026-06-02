@@ -620,6 +620,97 @@ export function setStoredEmbeddingDimensions(db: Database.Database, dimensions: 
   setMetadata(db, METADATA_KEY_EMBEDDING_DIMENSIONS, String(dimensions));
 }
 
+// ===========================================
+// 统计埋点（stats.* 前缀，复用 metadata 表，无需 schema 迁移）
+// ===========================================
+
+/**
+ * 原子累加计数器（stats.* 前缀）
+ *
+ * 用 SQL 原子 `value = value + ?` upsert，避免 watch 模式下并发查询的读-改-写丢计数。
+ * 首次插入时 value 即为 by。
+ */
+export function incrementStat(db: Database.Database, key: string, by = 1): void {
+  const delta = Math.trunc(by);
+  db.prepare(`
+    INSERT INTO metadata (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + CAST(? AS INTEGER) AS TEXT)
+  `).run(key, String(delta), delta);
+}
+
+/**
+ * 存储 JSON 序列化的统计值（如最近一次索引快照）
+ */
+export function setStatJson(db: Database.Database, key: string, value: unknown): void {
+  setMetadata(db, key, JSON.stringify(value));
+}
+
+/**
+ * 读取 JSON 反序列化的统计值，解析失败或不存在返回 null
+ */
+export function getStatJson<T>(db: Database.Database, key: string): T | null {
+  const raw = getMetadata(db, key);
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 一次性读取所有 stats.* 计数器（原始字符串值）
+ */
+export function getAllStats(db: Database.Database): Record<string, string> {
+  const rows = db
+    .prepare(`SELECT key, value FROM metadata WHERE key LIKE 'stats.%'`)
+    .all() as Array<{ key: string; value: string }>;
+  const out: Record<string, string> = {};
+  for (const row of rows) out[row.key] = row.value;
+  return out;
+}
+
+/**
+ * 索引库健康快照（只读聚合）
+ */
+export interface HealthSnapshot {
+  totalFiles: number;
+  totalBytes: number;
+  byLanguage: Record<string, number>;
+  pendingMarks: number;
+  migrationState: LanceDbMigrationState | null;
+  embeddingDimensions: number | null;
+  indexVersion: number;
+}
+
+/**
+ * 聚合索引库健康快照（只读，不触发迁移状态机）
+ */
+export function collectHealthSnapshot(db: Database.Database): HealthSnapshot {
+  const agg = db
+    .prepare('SELECT COUNT(*) as c, COALESCE(SUM(size), 0) as bytes FROM files')
+    .get() as {
+    c: number;
+    bytes: number;
+  };
+  const langRows = db
+    .prepare('SELECT language, COUNT(*) as c FROM files GROUP BY language')
+    .all() as Array<{ language: string; c: number }>;
+  const byLanguage: Record<string, number> = {};
+  for (const row of langRows) byLanguage[row.language] = row.c;
+
+  return {
+    totalFiles: agg.c,
+    totalBytes: agg.bytes,
+    byLanguage,
+    pendingMarks: countPendingMarks(db),
+    migrationState: getLanceDbMigrationState(db),
+    embeddingDimensions: getStoredEmbeddingDimensions(db),
+    indexVersion: getIndexVersion(db),
+  };
+}
+
 /**
  * 获取当前索引版本号
  *

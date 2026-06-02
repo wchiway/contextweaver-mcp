@@ -11,7 +11,12 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
-import { codebaseRetrievalSchema, handleCodebaseRetrieval } from './tools/index.js';
+import {
+  codebaseRetrievalSchema,
+  handleCodebaseRetrieval,
+  handleStats,
+  statsToolSchema,
+} from './tools/index.js';
 
 // ===========================================
 // 服务器配置
@@ -109,6 +114,27 @@ Examples of BAD queries:
       required: ['repo_path', 'information_request'],
     },
   },
+  {
+    name: 'stats',
+    description: `Show ContextWeaver index/search/health statistics for a repository.
+
+Returns three sections:
+1. Index process: last index run snapshot + cumulative run count.
+2. Search quality/behavior: cumulative queries, cache hit rate, average per-stage latency (retrieve/rerank/expand/pack), average recall.
+3. Health/consistency: file count, language breakdown, LanceDB vector row count, embedding dimensions, migration state, pending_marks, and cross-store consistency diagnostics.
+
+Use this to inspect whether the index is healthy and how search is performing.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'The absolute file system path to the repository root.',
+        },
+      },
+      required: ['repo_path'],
+    },
+  },
 ];
 
 // ===========================================
@@ -174,6 +200,10 @@ export async function startMcpServer(): Promise<void> {
         case 'codebase-retrieval': {
           const parsed = codebaseRetrievalSchema.parse(args);
           return await handleCodebaseRetrieval(parsed, onProgress);
+        }
+        case 'stats': {
+          const parsed = statsToolSchema.parse(args);
+          return await handleStats(parsed);
         }
         default:
           throw new Error(`Unknown tool: ${name}`);

@@ -242,5 +242,23 @@ cli
     db.close();
   });
 
+cli
+  .command('stats', '查看索引/搜索/健康统计')
+  .option('--json', '以 JSON 格式输出')
+  .option('-p, --path <path>', '项目路径（默认当前目录）')
+  .action(async (options: { json?: boolean; path?: string }) => {
+    const rootPath = options.path ? path.resolve(options.path) : process.cwd();
+    const projectId = generateProjectId(rootPath);
+
+    const { collectStats, renderStatsText } = await import('./stats/index.js');
+    const report = await collectStats(projectId);
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${renderStatsText(report)}\n`);
+    }
+  });
+
 cli.help();
 cli.parse();
