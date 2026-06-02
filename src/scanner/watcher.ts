@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { generateProjectId } from '../db/index.js';
-import { logger } from '../utils/logger.js';
 import { withLock } from '../utils/lock.js';
-import { isFiltered, initFilter } from './filter.js';
+import { logger } from '../utils/logger.js';
+import { initFilter, isFiltered } from './filter.js';
 import { scan } from './index.js';
 
 export interface WatcherHandle {
@@ -29,7 +29,7 @@ function defaultWatchFactory(
   callback: WatchCallback,
 ): WatcherHandle {
   const watcher = fs.watch(rootPath, options, (eventType, fileName) => {
-    callback(eventType, typeof fileName === 'string' ? fileName : fileName?.toString());
+    callback(eventType, fileName);
   });
 
   return {
@@ -51,12 +51,7 @@ export function createWatchCoordinator(
   start: () => Promise<void>;
   close: () => void;
 } {
-  const {
-    debounceMs,
-    scanFn,
-    shouldIgnore,
-    watchFactory = defaultWatchFactory,
-  } = options;
+  const { debounceMs, scanFn, shouldIgnore, watchFactory = defaultWatchFactory } = options;
 
   let timer: NodeJS.Timeout | null = null;
   let watcher: WatcherHandle | null = null;
@@ -167,10 +162,7 @@ export async function startWatchMode(
 
   await coordinator.start();
 
-  logger.info(
-    { rootPath: absoluteRoot, debounceMs },
-    'watch: 文件监听已启动，按 Ctrl+C 停止',
-  );
+  logger.info({ rootPath: absoluteRoot, debounceMs }, 'watch: 文件监听已启动，按 Ctrl+C 停止');
 
   const shutdown = (): void => {
     coordinator.close();

@@ -11,8 +11,8 @@ import {
   getAllFileMeta,
   getAllPaths,
   getFilesNeedingVectorIndex,
-  incrementIndexVersion,
   getStoredEmbeddingDimensions,
+  incrementIndexVersion,
   initDb,
   setStoredEmbeddingDimensions,
 } from '../db/index.js';

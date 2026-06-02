@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
-import type { SearchConfig } from './types.js';
 import { DEFAULT_CONFIG, SEARCH_CONFIG_BOUNDS } from './config.js';
+import type { SearchConfig } from './types.js';
 
 const SEARCH_ENV_MAP = {
   CW_SEARCH_WVEC: 'wVec',
@@ -18,16 +18,13 @@ function normalizeWeight(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
 }
 
-function clampValue(
-  key: keyof SearchConfig,
-  rawValue: string,
-): number | undefined {
+function clampValue(key: keyof SearchConfig, rawValue: string): number | undefined {
   const parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) {
     return undefined;
   }
 
-  const bounds = SEARCH_CONFIG_BOUNDS[key];
+  const bounds = SEARCH_CONFIG_BOUNDS[key as keyof typeof SEARCH_CONFIG_BOUNDS];
   if (!bounds) {
     return parsed;
   }

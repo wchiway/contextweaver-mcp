@@ -68,18 +68,10 @@ export function buildQueryCacheKey(input: {
     .digest('hex');
 }
 
-export function getCachedContextPack(
-  projectId: string,
-  key: string,
-): ContextPack | undefined {
+export function getCachedContextPack(projectId: string, key: string): ContextPack | undefined {
   return getProjectCache(projectId).get(key);
 }
 
-export function setCachedContextPack(
-  projectId: string,
-  key: string,
-  pack: ContextPack,
-): void {
+export function setCachedContextPack(projectId: string, key: string, pack: ContextPack): void {
   getProjectCache(projectId).set(key, pack);
 }
-

@@ -21,11 +21,6 @@ import { ChunkContentLoader } from './ChunkContentLoader.js';
 import { ContextPacker } from './ContextPacker.js';
 import { DEFAULT_CONFIG } from './config.js';
 import {
-  buildQueryCacheKey,
-  getCachedContextPack,
-  setCachedContextPack,
-} from './QueryCache.js';
-import {
   isChunksFtsInitialized,
   isFtsInitialized,
   searchChunksFts,
@@ -34,6 +29,7 @@ import {
 } from './fts.js';
 import { getGraphExpander } from './GraphExpander.js';
 import { createSearchConfigFingerprint } from './loadConfig.js';
+import { buildQueryCacheKey, getCachedContextPack, setCachedContextPack } from './QueryCache.js';
 import type { ContextPack, ScoredChunk, SearchConfig } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
 

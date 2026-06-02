@@ -12,8 +12,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { getDefaultEnvFileContent } from '../../defaultEnv.js';
 import { generateProjectId } from '../../db/index.js';
+import { getDefaultEnvFileContent } from '../../defaultEnv.js';
 // 注意：SearchService 和 scan 改为延迟导入，避免在 MCP 启动时就加载 native 模块
 import type { ContextPack, Segment } from '../../search/types.js';
 import { logger } from '../../utils/logger.js';
