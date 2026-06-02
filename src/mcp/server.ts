@@ -13,8 +13,14 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { logger } from '../utils/logger.js';
 import {
   codebaseRetrievalSchema,
+  findReferencesSchema,
+  getSymbolDefinitionSchema,
   handleCodebaseRetrieval,
+  handleFindReferences,
+  handleGetSymbolDefinition,
+  handleListFiles,
   handleStats,
+  listFilesSchema,
   statsToolSchema,
 } from './tools/index.js';
 
@@ -49,7 +55,7 @@ const SERVER_VERSION = resolveServerVersion();
 // 工具定义
 // ===========================================
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: 'codebase-retrieval',
     description: `
@@ -135,6 +141,107 @@ Use this to inspect whether the index is healthy and how search is performing.`,
       required: ['repo_path'],
     },
   },
+  {
+    name: 'list-files',
+    description: `List indexed files for quick structural exploration.
+
+Use this when you want:
+- repository structure
+- file paths, languages, and sizes
+- zero embedding API cost
+
+This is a metadata view, not semantic retrieval.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'The absolute file system path to the repository root.',
+        },
+        glob: {
+          type: 'string',
+          description: 'Optional glob pattern to filter returned file paths.',
+        },
+        language: {
+          type: 'string',
+          description: 'Optional language filter matched against files.language.',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of files to return. Defaults to 200.',
+        },
+      },
+      required: ['repo_path'],
+    },
+  },
+  {
+    name: 'find-references',
+    description: `Find heuristic text references to a known symbol across indexed chunks.
+
+Use this when:
+- you know the exact symbol name
+- you want likely usage sites
+
+Limits:
+- heuristic text search, not compiler-accurate references
+- for exhaustive raw text matching, use grep outside MCP`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'The absolute file system path to the repository root.',
+        },
+        symbol: {
+          type: 'string',
+          description: 'The exact symbol name to search for.',
+        },
+        exclude_definition: {
+          type: 'boolean',
+          description: 'Exclude chunks whose breadcrumb tail matches the symbol name.',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of references to return. Defaults to 50.',
+        },
+      },
+      required: ['repo_path', 'symbol'],
+    },
+  },
+  {
+    name: 'get-symbol-definition',
+    description: `Find likely symbol definitions for a known symbol name.
+
+Use this when:
+- you know the exact symbol name
+- you want the defining code block
+
+Limits:
+- heuristic definition lookup, not compiler-accurate navigation
+- ranks breadcrumb matches first, then definition-pattern FTS fallback`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'The absolute file system path to the repository root.',
+        },
+        symbol: {
+          type: 'string',
+          description: 'The exact symbol name to resolve.',
+        },
+        hint_path: {
+          type: 'string',
+          description: 'Optional preferred path used to disambiguate same-name definitions.',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of definitions to return. Defaults to 3.',
+        },
+      },
+      required: ['repo_path', 'symbol'],
+    },
+  },
 ];
 
 // ===========================================
@@ -204,6 +311,18 @@ export async function startMcpServer(): Promise<void> {
         case 'stats': {
           const parsed = statsToolSchema.parse(args);
           return await handleStats(parsed);
+        }
+        case 'list-files': {
+          const parsed = listFilesSchema.parse(args);
+          return await handleListFiles(parsed, onProgress);
+        }
+        case 'find-references': {
+          const parsed = findReferencesSchema.parse(args);
+          return await handleFindReferences(parsed, onProgress);
+        }
+        case 'get-symbol-definition': {
+          const parsed = getSymbolDefinitionSchema.parse(args);
+          return await handleGetSymbolDefinition(parsed, onProgress);
         }
         default:
           throw new Error(`Unknown tool: ${name}`);

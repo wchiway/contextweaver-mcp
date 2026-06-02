@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cac from 'cac';
+import { registerMirrorCommands } from './cli/mirrorCommands.js';
 import { generateProjectId } from './db/index.js';
 import { getDefaultEnvFileContent } from './defaultEnv.js';
 import { type ScanStats, scan } from './scanner/index.js';
@@ -259,6 +260,8 @@ cli
       process.stdout.write(`${renderStatsText(report)}\n`);
     }
   });
+
+registerMirrorCommands(cli);
 
 cli.help();
 cli.parse();
