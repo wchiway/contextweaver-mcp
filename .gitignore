@@ -9,6 +9,7 @@ dist
 test-*
 .codex
 .pnpm-store
+.worktrees/
 
 # Local tooling
 .serena/
