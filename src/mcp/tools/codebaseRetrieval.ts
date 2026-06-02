@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { getDefaultEnvFileContent } from '../../defaultEnv.js';
 import { generateProjectId } from '../../db/index.js';
 // 注意：SearchService 和 scan 改为延迟导入，避免在 MCP 启动时就加载 native 模块
 import type { ContextPack, Segment } from '../../search/types.js';
@@ -68,24 +69,7 @@ async function ensureDefaultEnvFile(): Promise<void> {
   }
 
   // 写入默认配置
-  const defaultEnvContent = `# ContextWeaver 示例环境变量配置文件
-
-# Embedding API 配置（必需）
-EMBEDDINGS_API_KEY=your-api-key-here
-EMBEDDINGS_BASE_URL=https://api.siliconflow.cn/v1/embeddings
-EMBEDDINGS_MODEL=BAAI/bge-m3
-EMBEDDINGS_MAX_CONCURRENCY=10
-EMBEDDINGS_DIMENSIONS=1024
-
-# Reranker 配置（必需）
-RERANK_API_KEY=your-api-key-here
-RERANK_BASE_URL=https://api.siliconflow.cn/v1/rerank
-RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_TOP_N=20
-
-# 索引忽略模式（可选，逗号分隔，默认已包含常见忽略项）
-# IGNORE_PATTERNS=.venv,node_modules
-`;
+  const defaultEnvContent = getDefaultEnvFileContent();
 
   fs.writeFileSync(envFile, defaultEnvContent);
   logger.info({ envFile }, '已创建默认 .env 配置文件');
@@ -218,9 +202,10 @@ export async function handleCodebaseRetrieval(
 
   // 4. 延迟导入 SearchService（避免 MCP 启动时加载 native 模块）
   const { SearchService } = await import('../../search/SearchService.js');
+  const { getSearchConfigOverrides } = await import('../../search/loadConfig.js');
 
   // 5. 创建 SearchService 实例
-  const service = new SearchService(projectId, repo_path);
+  const service = new SearchService(projectId, repo_path, getSearchConfigOverrides());
   await service.init();
   logger.debug('SearchService 初始化完成');
 

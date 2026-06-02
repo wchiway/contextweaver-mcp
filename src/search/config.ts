@@ -4,6 +4,37 @@
 
 import type { SearchConfig } from './types.js';
 
+export const SEARCH_CONFIG_BOUNDS = {
+  vectorTopK: { min: 40, max: 200, integer: true },
+  vectorTopM: { min: 30, max: 100, integer: true },
+  ftsTopKFiles: { min: 10, max: 50, integer: true },
+  lexChunksPerFile: { min: 1, max: 5, integer: true },
+  lexTotalChunks: { min: 20, max: 80, integer: true },
+  rrfK0: { min: 10, max: 60, integer: true },
+  wVec: { min: 0, max: 1, integer: false },
+  wLex: { min: 0, max: 1, integer: false },
+  fusedTopM: { min: 30, max: 100, integer: true },
+  rerankTopN: { min: 5, max: 20, integer: true },
+  maxRerankChars: { min: 500, max: 2000, integer: true },
+  maxBreadcrumbChars: { min: 100, max: 500, integer: true },
+  headRatio: { min: 0.5, max: 0.8, integer: false },
+  neighborHops: { min: 1, max: 3, integer: true },
+  breadcrumbExpandLimit: { min: 1, max: 5, integer: true },
+  importFilesPerSeed: { min: 0, max: 5, integer: true },
+  chunksPerImportFile: { min: 1, max: 5, integer: true },
+  decayNeighbor: { min: 0.5, max: 0.9, integer: false },
+  decayBreadcrumb: { min: 0.4, max: 0.8, integer: false },
+  decayImport: { min: 0.3, max: 0.7, integer: false },
+  decayDepth: { min: 0.5, max: 0.9, integer: false },
+  maxSegmentsPerFile: { min: 1, max: 5, integer: true },
+  maxTotalChars: { min: 20000, max: 80000, integer: true },
+  smartTopScoreRatio: { min: 0.3, max: 0.7, integer: false },
+  smartTopScoreDeltaAbs: { min: 0.1, max: 0.4, integer: false },
+  smartMinScore: { min: 0.1, max: 0.4, integer: false },
+  smartMinK: { min: 1, max: 3, integer: true },
+  smartMaxK: { min: 5, max: 15, integer: true },
+} satisfies Partial<Record<keyof SearchConfig, { min: number; max: number; integer: boolean }>>;
+
 export const DEFAULT_CONFIG: SearchConfig = {
   // ── Recall (向量 + 词法召回) ──
   vectorTopK: 80, // Vector ANN candidates before dedup. Range: 40–200. Higher = better recall, more compute.

@@ -7,8 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cac from 'cac';
+import { getDefaultEnvFileContent } from './defaultEnv.js';
 import { generateProjectId } from './db/index.js';
 import { type ScanStats, scan } from './scanner/index.js';
+import { startWatchMode } from './scanner/watcher.js';
 import { logger } from './utils/logger.js';
 
 // 读取 package.json 获取版本号
@@ -54,24 +56,7 @@ cli.command('init', '初始化 ContextWeaver 配置').action(async () => {
   }
 
   // 写入默认 .env 配置
-  const defaultEnvContent = `# ContextWeaver 示例环境变量配置文件
-
-# Embedding API 配置（必需）
-EMBEDDINGS_API_KEY=your-api-key-here
-EMBEDDINGS_BASE_URL=https://api.siliconflow.cn/v1/embeddings
-EMBEDDINGS_MODEL=BAAI/bge-m3
-EMBEDDINGS_MAX_CONCURRENCY=10
-EMBEDDINGS_DIMENSIONS=1024
-
-# Reranker 配置（必需）
-RERANK_API_KEY=your-api-key-here
-RERANK_BASE_URL=https://api.siliconflow.cn/v1/rerank
-RERANK_MODEL=BAAI/bge-reranker-v2-m3
-RERANK_TOP_N=20
-
-# 索引忽略模式（可选，逗号分隔，默认已包含常见忽略项）
-# IGNORE_PATTERNS=.venv,node_modules
-`;
+  const defaultEnvContent = getDefaultEnvFileContent();
   try {
     await fs.writeFile(envFile, defaultEnvContent);
     logger.info(`创建 .env 文件: ${envFile}`);
@@ -136,6 +121,27 @@ cli
     } catch (err) {
       const error = err as { message?: string; stack?: string };
       logger.error({ err, stack: error.stack }, `索引失败: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+cli
+  .command('watch [path]', '监听文件变化并自动执行增量索引')
+  .option('--debounce <ms>', '防抖时间（毫秒，默认 500）')
+  .action(async (targetPath: string | undefined, options: { debounce?: string }) => {
+    const rootPath = targetPath ? path.resolve(targetPath) : process.cwd();
+    const debounceMs = options.debounce ? Number.parseInt(options.debounce, 10) : 500;
+
+    if (!Number.isFinite(debounceMs) || debounceMs < 0) {
+      logger.error('无效的 --debounce 参数，必须是大于等于 0 的整数');
+      process.exit(1);
+    }
+
+    try {
+      await startWatchMode(rootPath, { debounceMs });
+    } catch (err) {
+      const error = err as { message?: string; stack?: string };
+      logger.error({ err, stack: error.stack }, `watch 模式启动失败: ${error.message}`);
       process.exit(1);
     }
   });

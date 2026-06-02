@@ -571,6 +571,7 @@ export function clear(db: Database.Database): void {
 // ===========================================
 
 const METADATA_KEY_EMBEDDING_DIMENSIONS = 'embedding_dimensions';
+const METADATA_KEY_INDEX_VERSION = 'index_version';
 const METADATA_KEY_LANCEDB_MIGRATION_STATE = 'lancedb_migration_displaycode_state';
 const METADATA_KEY_LANCEDB_MIGRATION_LOCK = 'lancedb_migration_lock';
 
@@ -617,6 +618,27 @@ export function getStoredEmbeddingDimensions(db: Database.Database): number | nu
  */
 export function setStoredEmbeddingDimensions(db: Database.Database, dimensions: number): void {
   setMetadata(db, METADATA_KEY_EMBEDDING_DIMENSIONS, String(dimensions));
+}
+
+/**
+ * 获取当前索引版本号
+ *
+ * 用于搜索缓存失效：scan() 发生实际写入时递增。
+ */
+export function getIndexVersion(db: Database.Database): number {
+  const value = getMetadata(db, METADATA_KEY_INDEX_VERSION);
+  if (value === null) return 0;
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * 递增索引版本号并返回新值
+ */
+export function incrementIndexVersion(db: Database.Database): number {
+  const next = getIndexVersion(db) + 1;
+  setMetadata(db, METADATA_KEY_INDEX_VERSION, String(next));
+  return next;
 }
 
 /**

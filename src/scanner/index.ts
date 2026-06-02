@@ -11,6 +11,7 @@ import {
   getAllFileMeta,
   getAllPaths,
   getFilesNeedingVectorIndex,
+  incrementIndexVersion,
   getStoredEmbeddingDimensions,
   initDb,
   setStoredEmbeddingDimensions,
@@ -295,6 +296,10 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
         const error = err as { message?: string };
         logger.warn({ error: error.message }, 'GC 跳过');
       }
+    }
+
+    if (stats.added + stats.modified + stats.deleted > 0) {
+      incrementIndexVersion(db);
     }
 
     // 索引完成后使 GraphExpander 缓存失效，确保后续搜索使用最新文件列表

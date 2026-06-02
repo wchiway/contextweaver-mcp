@@ -12,7 +12,7 @@ import type Database from 'better-sqlite3';
 import { getRerankerClient } from '../api/reranker.js';
 import { getEmbeddingConfig } from '../config.js';
 import { bootstrap } from '../db/bootstrap.js';
-import { initDb } from '../db/index.js';
+import { getIndexVersion, initDb } from '../db/index.js';
 import { getIndexer, type Indexer } from '../indexer/index.js';
 import { isDebugEnabled, logger } from '../utils/logger.js';
 import type { SearchResult as VectorSearchResult } from '../vectorStore/index.js';
@@ -21,6 +21,11 @@ import { ChunkContentLoader } from './ChunkContentLoader.js';
 import { ContextPacker } from './ContextPacker.js';
 import { DEFAULT_CONFIG } from './config.js';
 import {
+  buildQueryCacheKey,
+  getCachedContextPack,
+  setCachedContextPack,
+} from './QueryCache.js';
+import {
   isChunksFtsInitialized,
   isFtsInitialized,
   searchChunksFts,
@@ -28,6 +33,7 @@ import {
   segmentQuery,
 } from './fts.js';
 import { getGraphExpander } from './GraphExpander.js';
+import { createSearchConfigFingerprint } from './loadConfig.js';
 import type { ContextPack, ScoredChunk, SearchConfig } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
 
@@ -37,10 +43,12 @@ export class SearchService {
   private vectorStore: VectorStore | null = null;
   private db: Database.Database | null = null;
   private config: SearchConfig;
+  private configFingerprint: string;
 
   constructor(projectId: string, _projectPath: string, config?: Partial<SearchConfig>) {
     this.projectId = projectId;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.configFingerprint = createSearchConfigFingerprint(this.config);
   }
 
   async init(): Promise<void> {
@@ -65,6 +73,18 @@ export class SearchService {
    * 构建上下文包（用于问答/生成）
    */
   async buildContextPack(query: string): Promise<ContextPack> {
+    const db = this.db as Database.Database;
+    const cacheKey = buildQueryCacheKey({
+      query,
+      projectId: this.projectId,
+      indexVersion: getIndexVersion(db),
+      configFingerprint: this.configFingerprint,
+    });
+    const cached = getCachedContextPack(this.projectId, cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const timingMs: Record<string, number> = {};
     let t0 = Date.now();
 
@@ -97,7 +117,7 @@ export class SearchService {
     const files = await packer.pack([...seeds, ...expanded], this.db as Database.Database);
     timingMs.pack = Date.now() - t0;
 
-    return {
+    const pack = {
       query,
       seeds,
       expanded,
@@ -108,6 +128,9 @@ export class SearchService {
         timingMs,
       },
     };
+
+    setCachedContextPack(this.projectId, cacheKey, pack);
+    return pack;
   }
 
   // 召回方法
