@@ -85,6 +85,11 @@ export const codebaseRetrievalSchema = z.object({
 
 export type CodebaseRetrievalInput = z.infer<typeof codebaseRetrievalSchema>;
 
+export interface CodebaseRetrievalFormatOptions {
+  outputFormat?: 'markdown' | 'json' | 'both';
+  returnDebug?: boolean;
+}
+
 function modeConfig(mode: CodebaseRetrievalInput['mode']): Partial<SearchConfig> {
   switch (mode) {
     case 'quick':
@@ -248,7 +253,10 @@ export async function handleCodebaseRetrieval(
   );
 
   // 7. 格式化输出
-  return formatMcpResponse(contextPack);
+  return formatCodebaseRetrievalResponse(contextPack, {
+    outputFormat: args.output_format,
+    returnDebug: args.return_debug,
+  });
 }
 
 // 响应格式化
@@ -256,7 +264,48 @@ export async function handleCodebaseRetrieval(
 /**
  * 格式化为 MCP 响应格式
  */
-function formatMcpResponse(pack: ContextPack): { content: Array<{ type: 'text'; text: string }> } {
+export function formatCodebaseRetrievalResponse(
+  pack: ContextPack,
+  options: CodebaseRetrievalFormatOptions = {},
+): { content: Array<{ type: 'text'; text: string }> } {
+  const outputFormat = options.outputFormat ?? 'markdown';
+  if (outputFormat === 'json') {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(toJsonPayload(pack, options), null, 2),
+        },
+      ],
+    };
+  }
+
+  if (outputFormat === 'both') {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: formatMarkdown(pack),
+        },
+        {
+          type: 'text',
+          text: JSON.stringify(toJsonPayload(pack, options), null, 2),
+        },
+      ],
+    };
+  }
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: formatMarkdown(pack),
+      },
+    ],
+  };
+}
+
+function formatMarkdown(pack: ContextPack): string {
   const { files, seeds } = pack;
 
   // 构建文件内容块
@@ -274,15 +323,30 @@ function formatMcpResponse(pack: ContextPack): { content: Array<{ type: 'text'; 
     `Total segments: ${files.reduce((acc, f) => acc + f.segments.length, 0)}`,
   ].join(' | ');
 
-  const text = `${summary}\n\n${fileBlocks}`;
+  return `${summary}\n\n${fileBlocks}`;
+}
 
+function toJsonPayload(pack: ContextPack, options: CodebaseRetrievalFormatOptions) {
   return {
-    content: [
-      {
-        type: 'text',
-        text,
-      },
-    ],
+    query: pack.query,
+    summary: {
+      seedCount: pack.seeds.length,
+      expandedCount: pack.expanded.length,
+      fileCount: pack.files.length,
+      totalSegments: pack.files.reduce((acc, f) => acc + f.segments.length, 0),
+    },
+    files: pack.files.map((file) => ({
+      path: file.filePath,
+      segments: file.segments.map((seg) => ({
+        path: seg.filePath,
+        startLine: seg.startLine,
+        endLine: seg.endLine,
+        score: seg.score,
+        breadcrumb: seg.breadcrumb,
+        text: seg.text,
+      })),
+    })),
+    ...(options.returnDebug && pack.debug ? { debug: pack.debug } : {}),
   };
 }
 

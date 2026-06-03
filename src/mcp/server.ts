@@ -153,6 +153,11 @@ Examples of BAD queries:
           type: 'boolean',
           description: 'Include per-call debug metadata when true.',
         },
+        output_format: {
+          type: 'string',
+          enum: ['markdown', 'json', 'both'],
+          description: 'Response format. Defaults to markdown for backward compatibility.',
+        },
       },
       required: ['repo_path', 'information_request'],
     },
