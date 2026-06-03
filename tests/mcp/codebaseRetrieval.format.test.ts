@@ -28,6 +28,8 @@ function pack(): ContextPack {
       wVec: 0.6,
       wLex: 0.4,
       timingMs: { retrieve: 10, rerank: 20, expand: 5, pack: 2 },
+      warnings: ['Low confidence: top rerank score 0.200 is below threshold 0.400.'],
+      lowConfidence: true,
     },
   };
 }
@@ -49,6 +51,7 @@ describe('formatCodebaseRetrievalResponse', () => {
     const parsed = JSON.parse(response.content[0]?.text ?? '');
     expect(parsed.files[0]?.path).toBe('src/search/SearchService.ts');
     expect(parsed.files[0]?.segments[0]?.score).toBe(0.92);
+    expect(parsed.summary.warnings[0]).toContain('Low confidence');
     expect(parsed.debug.timingMs.retrieve).toBe(10);
   });
 
@@ -60,6 +63,7 @@ describe('formatCodebaseRetrievalResponse', () => {
 
     expect(response.content).toHaveLength(2);
     expect(response.content[0]?.text).toContain('Found 0 relevant code blocks');
+    expect(response.content[0]?.text).toContain('Warning: Low confidence');
     expect(JSON.parse(response.content[1]?.text ?? '').files).toHaveLength(1);
   });
 });

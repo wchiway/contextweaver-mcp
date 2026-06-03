@@ -82,6 +82,11 @@ export interface SearchConfig {
    * 硬上限，避免刷屏 / token 溢出
    */
   smartMaxK: number;
+
+  /**
+   * Top1 低于 floor 时的返回策略
+   */
+  lowConfidenceBehavior: 'return_top1' | 'return_empty' | 'return_with_warning';
 }
 
 export type RetrievalMode = 'quick' | 'balanced' | 'deep';
@@ -174,5 +179,7 @@ export interface ContextPack {
     wVec: number;
     wLex: number;
     timingMs: Record<string, number>;
+    warnings?: string[];
+    lowConfidence?: boolean;
   };
 }

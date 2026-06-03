@@ -64,7 +64,11 @@ function wireService(
 
   const retrieveSpy = vi.fn().mockResolvedValue([candidate]);
   const rerankSpy = vi.fn().mockResolvedValue([seed]);
-  const cutoffSpy = vi.fn((chunks: ScoredChunk[]) => chunks);
+  const cutoffSpy = vi.fn((chunks: ScoredChunk[]) => ({
+    seeds: chunks,
+    lowConfidence: false,
+    warnings: [],
+  }));
   const expandSpy = vi.fn().mockResolvedValue([expanded]);
 
   (service as any).db = db;

@@ -153,6 +153,11 @@ Examples of BAD queries:
           type: 'boolean',
           description: 'Include per-call debug metadata when true.',
         },
+        low_confidence_behavior: {
+          type: 'string',
+          enum: ['return_top1', 'return_empty', 'return_with_warning'],
+          description: 'Controls MCP behavior when top rerank score is below SmartTopK floor.',
+        },
         output_format: {
           type: 'string',
           enum: ['markdown', 'json', 'both'],

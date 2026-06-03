@@ -46,6 +46,12 @@ export function mergeScoredChunks(chunks: ScoredChunk[]): ScoredChunk[] {
   return Array.from(bestByKey.values()).sort((a, b) => b.score - a.score);
 }
 
+interface SmartCutoffResult {
+  seeds: ScoredChunk[];
+  lowConfidence: boolean;
+  warnings: string[];
+}
+
 export class SearchService {
   private projectId: string;
   private indexer: Indexer | null = null;
@@ -140,7 +146,8 @@ export class SearchService {
 
     // 4. Smart TopK Cutoff
     t0 = Date.now();
-    const seeds = this.applySmartCutoff(reranked);
+    const cutoff = this.applySmartCutoff(reranked);
+    const seeds = cutoff.seeds;
     timingMs.smartCutoff = Date.now() - t0;
 
     // 5. 扩展（Phase 2 实现）
@@ -164,6 +171,8 @@ export class SearchService {
         wVec: this.config.wVec,
         wLex: this.config.wLex,
         timingMs,
+        warnings: cutoff.warnings,
+        lowConfidence: cutoff.lowConfidence,
       },
     };
 
@@ -645,13 +654,15 @@ export class SearchService {
    * 3. Safe Harbor：前 minK 个只检查 floor，不检查 ratio/delta
    * 4. 去重 + 补齐：cutoff 后去重，不足 minK 时从后续补齐
    */
-  private applySmartCutoff(candidates: ScoredChunk[]): ScoredChunk[] {
+  private applySmartCutoff(candidates: ScoredChunk[]): SmartCutoffResult {
     // 未启用时直接返回原列表
     if (!this.config.enableSmartTopK) {
-      return candidates;
+      return { seeds: candidates, lowConfidence: false, warnings: [] };
     }
 
-    if (candidates.length === 0) return [];
+    if (candidates.length === 0) {
+      return { seeds: [], lowConfidence: false, warnings: [] };
+    }
 
     // 防御：确保降序排列
     const sorted = candidates.slice().sort((a, b) => b.score - a.score);
@@ -668,8 +679,20 @@ export class SearchService {
 
     // 低置信熔断/降级（CLI 友好：返回 top1）
     if (topScore < floor) {
-      logger.debug({ topScore, floor }, 'SmartTopK: Top1 below floor, returning top1 only');
-      return [sorted[0]];
+      const warning = `Low confidence: top rerank score ${topScore.toFixed(3)} is below threshold ${floor.toFixed(3)}.`;
+      logger.debug(
+        { topScore, floor, behavior: this.config.lowConfidenceBehavior },
+        'SmartTopK: Top1 below floor',
+      );
+      switch (this.config.lowConfidenceBehavior) {
+        case 'return_empty':
+          return { seeds: [], lowConfidence: true, warnings: [warning] };
+        case 'return_with_warning':
+          return { seeds: [sorted[0]], lowConfidence: true, warnings: [warning] };
+        case 'return_top1':
+        default:
+          return { seeds: [sorted[0]], lowConfidence: true, warnings: [] };
+      }
     }
 
     // 动态阈值计算（ratio + deltaAbs 护栏）
@@ -750,7 +773,11 @@ export class SearchService {
       'SmartTopK: done',
     );
 
-    return deduped;
+    return { seeds: deduped, lowConfidence: false, warnings: [] };
+  }
+
+  applySmartCutoffForTest(candidates: ScoredChunk[]): SmartCutoffResult {
+    return this.applySmartCutoff(candidates);
   }
 
   /**

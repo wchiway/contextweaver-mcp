@@ -60,7 +60,20 @@ describe('SearchService query planner', () => {
       .spyOn(service as unknown as { hybridRetrieve: (...args: string[]) => Promise<ScoredChunk[]> }, 'hybridRetrieve')
       .mockImplementation(async (semanticQuery) => [makeChunk(`${semanticQuery}.ts`, 0, 0.9)]);
     vi.spyOn(service as unknown as { rerank: () => Promise<ScoredChunk[]> }, 'rerank').mockImplementation(async (_query, candidates) => candidates);
-    vi.spyOn(service as unknown as { applySmartCutoff: (chunks: ScoredChunk[]) => ScoredChunk[] }, 'applySmartCutoff').mockImplementation((chunks) => chunks);
+    vi.spyOn(
+      service as unknown as {
+        applySmartCutoff: (chunks: ScoredChunk[]) => {
+          seeds: ScoredChunk[];
+          lowConfidence: boolean;
+          warnings: string[];
+        };
+      },
+      'applySmartCutoff',
+    ).mockImplementation((chunks) => ({
+      seeds: chunks,
+      lowConfidence: false,
+      warnings: [],
+    }));
     vi.spyOn(service as unknown as { expand: () => Promise<ScoredChunk[]> }, 'expand').mockResolvedValue([]);
     vi.spyOn(service as unknown as { recordSearchStats: () => void }, 'recordSearchStats').mockImplementation(() => {});
     vi.spyOn(service as unknown as { db: Database.Database }, 'db', 'get').mockReturnValue(db);

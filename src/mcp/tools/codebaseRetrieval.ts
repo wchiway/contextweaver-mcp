@@ -77,6 +77,10 @@ export const codebaseRetrievalSchema = z.object({
     .optional()
     .describe('Optional maximum non-contiguous segments per file.'),
   return_debug: z.boolean().optional().describe('Include per-call debug metadata when true.'),
+  low_confidence_behavior: z
+    .enum(['return_top1', 'return_empty', 'return_with_warning'])
+    .optional()
+    .describe('Controls MCP behavior when top rerank score is below SmartTopK floor.'),
   output_format: z
     .enum(['markdown', 'json', 'both'])
     .optional()
@@ -124,6 +128,9 @@ function requestConfigOverrides(args: CodebaseRetrievalInput): Partial<SearchCon
     ...(args.max_total_chars !== undefined ? { maxTotalChars: args.max_total_chars } : {}),
     ...(args.max_segments_per_file !== undefined
       ? { maxSegmentsPerFile: args.max_segments_per_file }
+      : {}),
+    ...(args.low_confidence_behavior !== undefined
+      ? { lowConfidenceBehavior: args.low_confidence_behavior }
       : {}),
   };
 }
@@ -324,10 +331,16 @@ function formatMarkdown(pack: ContextPack): string {
     `Total segments: ${files.reduce((acc, f) => acc + f.segments.length, 0)}`,
   ].join(' | ');
 
-  return `${summary}\n\n${fileBlocks}`;
+  const warningText =
+    pack.debug?.warnings && pack.debug.warnings.length > 0
+      ? `${pack.debug.warnings.map((warning) => `Warning: ${warning}`).join('\n')}\n\n`
+      : '';
+
+  return `${summary}\n\n${warningText}${fileBlocks}`;
 }
 
 function toJsonPayload(pack: ContextPack, options: CodebaseRetrievalFormatOptions) {
+  const warnings = pack.debug?.warnings ?? [];
   return {
     query: pack.query,
     summary: {
@@ -335,6 +348,7 @@ function toJsonPayload(pack: ContextPack, options: CodebaseRetrievalFormatOption
       expandedCount: pack.expanded.length,
       fileCount: pack.files.length,
       totalSegments: pack.files.reduce((acc, f) => acc + f.segments.length, 0),
+      ...(warnings.length > 0 ? { warnings } : {}),
     },
     files: pack.files.map((file) => ({
       path: file.filePath,

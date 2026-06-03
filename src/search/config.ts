@@ -84,4 +84,5 @@ export const DEFAULT_CONFIG: SearchConfig = {
   smartMinScore: 0.25, // Hard floor: chunks below this score are always excluded. Range: 0.1–0.4.
   smartMinK: 2, // Minimum results to return regardless of scores. Range: 1–3.
   smartMaxK: 8, // Maximum results when smart topK is active. Range: 5–15.
+  lowConfidenceBehavior: 'return_top1', // Behavior when top rerank score is below SmartTopK floor.
 };
