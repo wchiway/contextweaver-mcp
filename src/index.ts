@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cac from 'cac';
 import { registerMirrorCommands } from './cli/mirrorCommands.js';
+import { registerUpdateCommand } from './cli/updateCommand.js';
 import { generateProjectId } from './db/index.js';
 import { getDefaultEnvFileContent } from './defaultEnv.js';
 import { type ScanStats, scan } from './scanner/index.js';
@@ -274,6 +275,7 @@ cli
   });
 
 registerMirrorCommands(cli);
+registerUpdateCommand(cli, { currentVersion: pkg.version, packageRoot: path.dirname(pkgPath) });
 
 cli.help();
 cli.parse();
