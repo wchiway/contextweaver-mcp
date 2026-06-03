@@ -29,9 +29,22 @@ import {
 } from './fts.js';
 import { getGraphExpander } from './GraphExpander.js';
 import { createSearchConfigFingerprint } from './loadConfig.js';
+import { buildQueryVariants } from './QueryPlanner.js';
 import { buildQueryCacheKey, getCachedContextPack, setCachedContextPack } from './QueryCache.js';
 import type { ContextPack, ScoredChunk, SearchConfig, SearchQueryInput } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
+
+export function mergeScoredChunks(chunks: ScoredChunk[]): ScoredChunk[] {
+  const bestByKey = new Map<string, ScoredChunk>();
+  for (const chunk of chunks) {
+    const key = `${chunk.filePath}#${chunk.chunkIndex}`;
+    const existing = bestByKey.get(key);
+    if (!existing || chunk.score > existing.score) {
+      bestByKey.set(key, chunk);
+    }
+  }
+  return Array.from(bestByKey.values()).sort((a, b) => b.score - a.score);
+}
 
 export class SearchService {
   private projectId: string;
@@ -101,9 +114,19 @@ export class SearchService {
     let t0 = Date.now();
 
     // 1. 混合召回
-    const candidates = await this.hybridRetrieve(
-      queryInput.semanticQuery,
-      queryInput.lexicalQuery,
+    const variants = buildQueryVariants({
+      semanticQuery: queryInput.semanticQuery,
+      technicalTerms: queryInput.technicalTerms,
+      enabled: queryInput.queryRewrite === true,
+    });
+    const candidates = mergeScoredChunks(
+      (
+        await Promise.all(
+          variants.map((variant) =>
+            this.hybridRetrieve(variant, queryInput.lexicalQuery ?? variant),
+          ),
+        )
+      ).flat(),
     );
     timingMs.retrieve = Date.now() - t0;
 

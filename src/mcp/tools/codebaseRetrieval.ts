@@ -201,6 +201,7 @@ export async function handleCodebaseRetrieval(
     semanticQuery,
     lexicalQuery,
     technicalTerms: technical_terms ?? [],
+    queryRewrite: args.mode === 'deep',
   });
 
   // 详细日志：seeds 信息
