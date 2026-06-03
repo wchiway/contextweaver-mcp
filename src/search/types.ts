@@ -80,6 +80,23 @@ export interface SearchConfig {
   smartMaxK: number;
 }
 
+export type RetrievalMode = 'quick' | 'balanced' | 'deep';
+export type RetrievalOutputFormat = 'markdown' | 'json' | 'both';
+
+export interface SearchScopeOptions {
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+  languages?: string[];
+  maxFiles?: number;
+}
+
+export interface ContextPackOptions {
+  mode?: RetrievalMode;
+  scope?: SearchScopeOptions;
+  lowConfidenceBehavior?: 'return_top1' | 'return_empty' | 'return_with_warning';
+  queryRewrite?: boolean;
+}
+
 // ===========================================
 // 搜索结果类型
 // ===========================================

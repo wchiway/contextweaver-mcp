@@ -116,6 +116,43 @@ Examples of BAD queries:
           description:
             'HARD FILTERS. An optional list of EXACT, KNOWN identifiers (class/function names, constants) that MUST appear in the code. Only use terms you are 100% sure exist. Leave empty if exploring.',
         },
+        mode: {
+          type: 'string',
+          enum: ['quick', 'balanced', 'deep'],
+          description:
+            'Optional retrieval profile. quick reduces cost, balanced uses defaults, deep increases recall and expansion.',
+        },
+        include_globs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional file glob allowlist applied after retrieval.',
+        },
+        exclude_globs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional file glob denylist applied after retrieval.',
+        },
+        language: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional language allowlist applied after retrieval.',
+        },
+        max_total_chars: {
+          type: 'number',
+          description: 'Optional per-call output budget in characters.',
+        },
+        max_files: {
+          type: 'number',
+          description: 'Optional maximum number of files returned after packing.',
+        },
+        max_segments_per_file: {
+          type: 'number',
+          description: 'Optional maximum non-contiguous segments per file.',
+        },
+        return_debug: {
+          type: 'boolean',
+          description: 'Include per-call debug metadata when true.',
+        },
       },
       required: ['repo_path', 'information_request'],
     },

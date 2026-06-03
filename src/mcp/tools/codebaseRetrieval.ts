@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { generateProjectId } from '../../db/index.js';
 // 注意：SearchService 和 scan 改为延迟导入，避免在 MCP 启动时就加载 native 模块
-import type { ContextPack, Segment } from '../../search/types.js';
+import type { ContextPack, SearchConfig, Segment } from '../../search/types.js';
 import { logger } from '../../utils/logger.js';
 import { checkEnvOrRespond, ensureIndexed, type ProgressCallback } from './shared.js';
 
@@ -34,9 +34,94 @@ export const codebaseRetrievalSchema = z.object({
     .describe(
       'HARD FILTERS. Precise identifiers to narrow down results. Only use symbols KNOWN to exist to avoid false negatives.',
     ),
+  mode: z
+    .enum(['quick', 'balanced', 'deep'])
+    .optional()
+    .describe(
+      'Optional retrieval profile. quick reduces cost, balanced uses defaults, deep increases recall and expansion.',
+    ),
+  include_globs: z
+    .array(z.string().min(1))
+    .max(20)
+    .optional()
+    .describe('Optional file glob allowlist applied after retrieval.'),
+  exclude_globs: z
+    .array(z.string().min(1))
+    .max(20)
+    .optional()
+    .describe('Optional file glob denylist applied after retrieval.'),
+  language: z
+    .array(z.string().min(1))
+    .max(20)
+    .optional()
+    .describe('Optional language allowlist applied after retrieval.'),
+  max_total_chars: z
+    .number()
+    .int()
+    .min(20000)
+    .max(80000)
+    .optional()
+    .describe('Optional per-call output budget in characters.'),
+  max_files: z
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .optional()
+    .describe('Optional maximum number of files returned after packing.'),
+  max_segments_per_file: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .optional()
+    .describe('Optional maximum non-contiguous segments per file.'),
+  return_debug: z.boolean().optional().describe('Include per-call debug metadata when true.'),
+  output_format: z
+    .enum(['markdown', 'json', 'both'])
+    .optional()
+    .describe('Response format. Defaults to markdown for backward compatibility.'),
 });
 
 export type CodebaseRetrievalInput = z.infer<typeof codebaseRetrievalSchema>;
+
+function modeConfig(mode: CodebaseRetrievalInput['mode']): Partial<SearchConfig> {
+  switch (mode) {
+    case 'quick':
+      return {
+        vectorTopK: 40,
+        vectorTopM: 30,
+        lexTotalChunks: 20,
+        fusedTopM: 30,
+        rerankTopN: 5,
+        smartMaxK: 5,
+        importFilesPerSeed: 0,
+      };
+    case 'deep':
+      return {
+        vectorTopK: 120,
+        vectorTopM: 80,
+        lexTotalChunks: 60,
+        fusedTopM: 80,
+        rerankTopN: 15,
+        smartMaxK: 12,
+        importFilesPerSeed: 5,
+      };
+    case 'balanced':
+    case undefined:
+      return {};
+  }
+}
+
+function requestConfigOverrides(args: CodebaseRetrievalInput): Partial<SearchConfig> {
+  return {
+    ...modeConfig(args.mode),
+    ...(args.max_total_chars !== undefined ? { maxTotalChars: args.max_total_chars } : {}),
+    ...(args.max_segments_per_file !== undefined
+      ? { maxSegmentsPerFile: args.max_segments_per_file }
+      : {}),
+  };
+}
 
 // 工具处理函数
 
@@ -96,7 +181,11 @@ export async function handleCodebaseRetrieval(
   const { getSearchConfigOverrides } = await import('../../search/loadConfig.js');
 
   // 5. 创建 SearchService 实例
-  const service = new SearchService(projectId, repo_path, getSearchConfigOverrides());
+  const configOverrides = {
+    ...getSearchConfigOverrides(),
+    ...requestConfigOverrides(args),
+  };
+  const service = new SearchService(projectId, repo_path, configOverrides);
   await service.init();
   logger.debug('SearchService 初始化完成');
 

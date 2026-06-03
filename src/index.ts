@@ -167,11 +167,15 @@ cli
   .option('--repo-path <path>', '代码库根目录（默认当前目录）')
   .option('--information-request <text>', '自然语言问题描述（必填）')
   .option('--technical-terms <terms>', '精确术语（逗号分隔）')
+  .option('--mode <mode>', '检索模式：quick | balanced | deep')
+  .option('--max-total-chars <n>', '输出字符预算')
   .action(
     async (options: {
       repoPath?: string;
       informationRequest?: string;
       technicalTerms?: string;
+      mode?: string;
+      maxTotalChars?: string;
     }) => {
       const repoPath = options.repoPath ? path.resolve(options.repoPath) : process.cwd();
       const informationRequest = options.informationRequest;
@@ -184,6 +188,9 @@ cli
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean);
+      const maxTotalChars = options.maxTotalChars
+        ? Number.parseInt(options.maxTotalChars, 10)
+        : undefined;
 
       const { handleCodebaseRetrieval } = await import('./mcp/tools/codebaseRetrieval.js');
 
@@ -191,6 +198,11 @@ cli
         repo_path: repoPath,
         information_request: informationRequest,
         technical_terms: technicalTerms.length > 0 ? technicalTerms : undefined,
+        mode:
+          options.mode === 'quick' || options.mode === 'balanced' || options.mode === 'deep'
+            ? options.mode
+            : undefined,
+        max_total_chars: Number.isFinite(maxTotalChars) ? maxTotalChars : undefined,
       });
 
       const text = response.content.map((item) => item.text).join('\n');
