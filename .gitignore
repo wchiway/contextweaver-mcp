@@ -14,5 +14,5 @@ test-*
 # Local tooling
 .serena/
 *.tgz
-docs/
+docs/plans/
 CLAUDE.md
