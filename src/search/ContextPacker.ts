@@ -6,7 +6,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import type { ScoredChunk, SearchConfig, Segment } from './types.js';
+import type { ChunkSource, ScoredChunk, SearchConfig, Segment } from './types.js';
 
 export class ContextPacker {
   private config: SearchConfig;
@@ -113,6 +113,9 @@ export class ContextPacker {
       score: number;
       breadcrumb: string;
       chunks: ScoredChunk[];
+      sources: Set<ChunkSource>;
+      chunkIndices: Set<number>;
+      isSeed: boolean;
     }> = [];
 
     for (const chunk of sorted) {
@@ -125,6 +128,9 @@ export class ContextPacker {
         last.end = Math.max(last.end, end);
         last.score = Math.max(last.score, chunk.score);
         last.chunks.push(chunk);
+        last.sources.add(chunk.source);
+        last.chunkIndices.add(chunk.chunkIndex);
+        last.isSeed ||= chunk.source === 'vector' || chunk.source === 'lexical';
       } else {
         // 新区间
         intervals.push({
@@ -133,6 +139,9 @@ export class ContextPacker {
           score: chunk.score,
           breadcrumb: chunk.record.breadcrumb,
           chunks: [chunk],
+          sources: new Set([chunk.source]),
+          chunkIndices: new Set([chunk.chunkIndex]),
+          isSeed: chunk.source === 'vector' || chunk.source === 'lexical',
         });
       }
     }
@@ -149,6 +158,9 @@ export class ContextPacker {
         endLine,
         score: iv.score,
         breadcrumb: iv.breadcrumb,
+        sources: Array.from(iv.sources),
+        isSeed: iv.isSeed,
+        chunkIndices: Array.from(iv.chunkIndices).sort((a, b) => a - b),
         text: content.slice(iv.start, iv.end),
       };
     });

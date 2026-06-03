@@ -19,6 +19,9 @@ function pack(): ContextPack {
             endLine: 3,
             score: 0.92,
             breadcrumb: 'src/search/SearchService.ts > class SearchService',
+            sources: ['vector'],
+            isSeed: true,
+            chunkIndices: [0],
             text: 'export class SearchService {}',
           },
         ],
@@ -39,6 +42,7 @@ describe('formatCodebaseRetrievalResponse', () => {
     const response = formatCodebaseRetrievalResponse(pack(), {});
     expect(response.content).toHaveLength(1);
     expect(response.content[0]?.text).toContain('Found 0 relevant code blocks');
+    expect(response.content[0]?.text).toContain('sources: vector');
     expect(response.content[0]?.text).toContain('```typescript');
   });
 
@@ -51,6 +55,7 @@ describe('formatCodebaseRetrievalResponse', () => {
     const parsed = JSON.parse(response.content[0]?.text ?? '');
     expect(parsed.files[0]?.path).toBe('src/search/SearchService.ts');
     expect(parsed.files[0]?.segments[0]?.score).toBe(0.92);
+    expect(parsed.files[0]?.segments[0]?.sources).toEqual(['vector']);
     expect(parsed.summary.warnings[0]).toContain('Low confidence');
     expect(parsed.debug.timingMs.retrieve).toBe(10);
   });

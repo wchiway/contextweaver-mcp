@@ -157,6 +157,12 @@ export interface Segment {
   score: number;
   /** 面包屑（取段内第一个 chunk 的） */
   breadcrumb: string;
+  /** 段内来源类型 */
+  sources: ChunkSource[];
+  /** 段内是否包含 seed chunk */
+  isSeed: boolean;
+  /** 段内 chunk 索引 */
+  chunkIndices: number[];
   /** 段文本（从原文件切片） */
   text: string;
 }

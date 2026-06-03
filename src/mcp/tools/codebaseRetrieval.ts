@@ -358,6 +358,9 @@ function toJsonPayload(pack: ContextPack, options: CodebaseRetrievalFormatOption
         endLine: seg.endLine,
         score: seg.score,
         breadcrumb: seg.breadcrumb,
+        sources: seg.sources,
+        isSeed: seg.isSeed,
+        chunkIndices: seg.chunkIndices,
         text: seg.text,
       })),
     })),
@@ -372,9 +375,10 @@ function formatSegment(seg: Segment): string {
   const lang = detectLanguage(seg.filePath);
   const header = `## ${seg.filePath} (L${seg.startLine}-${seg.endLine})`;
   const breadcrumb = seg.breadcrumb ? `> ${seg.breadcrumb}` : '';
+  const meta = `> sources: ${seg.sources.join(', ')} | score: ${seg.score.toFixed(3)}${seg.isSeed ? ' | seed' : ''}`;
   const code = `\`\`\`${lang}\n${seg.text}\n\`\`\``;
 
-  return [header, breadcrumb, code].filter(Boolean).join('\n');
+  return [header, breadcrumb, meta, code].filter(Boolean).join('\n');
 }
 
 /**
