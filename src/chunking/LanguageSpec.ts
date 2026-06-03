@@ -228,6 +228,95 @@ const LANGUAGE_SPECS: Record<string, LanguageSpecConfig> = {
     },
     commentTypes: new Set(['comment']),
   },
+
+  ruby: {
+    hierarchy: new Set(['module', 'class', 'singleton_class', 'method', 'singleton_method']),
+    nameFields: ['name'],
+    nameNodeTypes: new Set(['constant', 'identifier']),
+    prefixMap: {
+      module: 'module ',
+      class: 'class ',
+      singleton_class: 'class ',
+      method: 'def ',
+      singleton_method: 'def ',
+    },
+    commentTypes: new Set(['comment']),
+  },
+
+  php: {
+    hierarchy: new Set([
+      'namespace_definition',
+      'class_declaration',
+      'interface_declaration',
+      'trait_declaration',
+      'enum_declaration',
+      'method_declaration',
+      'function_definition',
+    ]),
+    nameFields: ['name'],
+    nameNodeTypes: new Set(['name']),
+    prefixMap: {
+      namespace_definition: 'namespace ',
+      class_declaration: 'class ',
+      interface_declaration: 'interface ',
+      trait_declaration: 'trait ',
+      enum_declaration: 'enum ',
+      method_declaration: '',
+      function_definition: 'function ',
+    },
+    commentTypes: new Set(['comment']),
+  },
+
+  kotlin: {
+    hierarchy: new Set(['class_declaration', 'object_declaration', 'function_declaration']),
+    nameFields: ['name'],
+    nameNodeTypes: new Set(['type_identifier', 'simple_identifier']),
+    prefixMap: {
+      class_declaration: 'class ',
+      object_declaration: 'object ',
+      function_declaration: 'fun ',
+    },
+    commentTypes: new Set(['line_comment', 'multiline_comment']),
+  },
+
+  swift: {
+    hierarchy: new Set([
+      'class_declaration',
+      'protocol_declaration',
+      'function_declaration',
+      'init_declaration',
+    ]),
+    nameFields: ['name'],
+    nameNodeTypes: new Set(['type_identifier', 'simple_identifier']),
+    prefixMap: {
+      class_declaration: 'type ',
+      protocol_declaration: 'protocol ',
+      function_declaration: 'func ',
+      init_declaration: 'init ',
+    },
+    commentTypes: new Set(['comment', 'multiline_comment']),
+  },
+
+  lua: {
+    hierarchy: new Set(['function_declaration', 'function_definition']),
+    nameFields: ['name'],
+    nameNodeTypes: new Set(['identifier', 'dot_index_expression', 'method_index_expression']),
+    prefixMap: {
+      function_declaration: 'function ',
+      function_definition: 'function ',
+    },
+    commentTypes: new Set(['comment']),
+  },
+
+  shell: {
+    hierarchy: new Set(['function_definition']),
+    nameFields: ['name'],
+    nameNodeTypes: new Set(['word']),
+    prefixMap: {
+      function_definition: 'function ',
+    },
+    commentTypes: new Set(['comment']),
+  },
 };
 
 /**

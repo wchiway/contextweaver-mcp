@@ -18,6 +18,12 @@ const GRAMMAR_MODULES: Record<string, string> = {
   c: 'tree-sitter-c',
   cpp: 'tree-sitter-cpp',
   c_sharp: 'tree-sitter-c-sharp',
+  ruby: 'tree-sitter-ruby',
+  php: 'tree-sitter-php',
+  kotlin: 'tree-sitter-kotlin',
+  swift: 'tree-sitter-swift',
+  lua: '@tree-sitter-grammars/tree-sitter-lua',
+  shell: 'tree-sitter-bash',
 };
 
 // 缓存已加载的语法
