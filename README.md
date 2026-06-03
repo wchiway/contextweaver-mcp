@@ -244,6 +244,16 @@ ContextWeaver exposes 5 MCP tools, following a layered design of "semantic retri
 | `repo_path` | string | ✅ | Absolute path to the repository root |
 | `information_request` | string | ✅ | The semantic intent in natural language |
 | `technical_terms` | string[] | ❌ | Exact technical terms (class/function names, etc.) |
+| `mode` | string | ❌ | Retrieval profile: `quick`, `balanced`, or `deep` |
+| `include_globs` | string[] | ❌ | File glob allowlist applied after retrieval |
+| `exclude_globs` | string[] | ❌ | File glob denylist applied after retrieval |
+| `language` | string[] | ❌ | Language allowlist applied after retrieval |
+| `max_total_chars` | number | ❌ | Per-call output budget in characters |
+| `max_files` | number | ❌ | Maximum number of files returned after packing |
+| `max_segments_per_file` | number | ❌ | Maximum non-contiguous segments per file |
+| `return_debug` | boolean | ❌ | Include debug metadata in structured output |
+| `low_confidence_behavior` | string | ❌ | Low-confidence handling: `return_top1`, `return_empty`, or `return_with_warning` |
+| `output_format` | string | ❌ | Response format: `markdown`, `json`, or `both` |
 
 #### `list-files` Parameters
 

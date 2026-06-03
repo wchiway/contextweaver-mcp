@@ -565,7 +565,9 @@ export class GraphExpander {
       new Set(
         seeds
           .map((seed) => seed.record.breadcrumb.split(' > ').at(-1) ?? '')
-          .map((tail) => tail.replace(/^(?:async\s+)?(?:class|function|method|const|let|var)\s+/, '').trim())
+          .map((tail) =>
+            tail.replace(/^(?:async\s+)?(?:class|function|method|const|let|var)\s+/, '').trim(),
+          )
           .filter((tail) => /^[A-Za-z_$][\w$]*$/.test(tail)),
       ),
     );
@@ -583,7 +585,9 @@ export class GraphExpander {
     const result: ScoredChunk[] = [];
     const seedScore = Math.max(...seeds.map((seed) => seed.score));
     for (const hit of hits) {
-      const chunk = (chunksMap.get(hit.filePath) ?? []).find((item) => item.chunk_index === hit.chunkIndex);
+      const chunk = (chunksMap.get(hit.filePath) ?? []).find(
+        (item) => item.chunk_index === hit.chunkIndex,
+      );
       if (!chunk) continue;
 
       const key = `${chunk.file_path}#${chunk.chunk_index}`;

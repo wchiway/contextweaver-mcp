@@ -29,8 +29,8 @@ import {
 } from './fts.js';
 import { getGraphExpander } from './GraphExpander.js';
 import { createSearchConfigFingerprint } from './loadConfig.js';
-import { buildQueryVariants } from './QueryPlanner.js';
 import { buildQueryCacheKey, getCachedContextPack, setCachedContextPack } from './QueryCache.js';
+import { buildQueryVariants } from './QueryPlanner.js';
 import type { ContextPack, ScoredChunk, SearchConfig, SearchQueryInput } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
 
@@ -694,7 +694,6 @@ export class SearchService {
           return { seeds: [], lowConfidence: true, warnings: [warning] };
         case 'return_with_warning':
           return { seeds: [sorted[0]], lowConfidence: true, warnings: [warning] };
-        case 'return_top1':
         default:
           return { seeds: [sorted[0]], lowConfidence: true, warnings: [] };
       }
