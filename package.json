@@ -1,6 +1,6 @@
 {
   "name": "@chiway/contextweaver",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "A context weaving tool for LLMs",
   "license": "MIT",
   "author": "chiway",
