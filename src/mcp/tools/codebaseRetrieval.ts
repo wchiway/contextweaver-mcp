@@ -166,12 +166,14 @@ export async function handleCodebaseRetrieval(
   // 3. 合并查询
   // - information_request 驱动语义向量搜索
   // - technical_terms 增强词法（FTS）匹配
-  const query = [information_request, ...(technical_terms || [])].filter(Boolean).join(' ');
+  const semanticQuery = information_request.trim();
+  const lexicalQuery = [information_request, ...(technical_terms || [])].filter(Boolean).join(' ');
 
   logger.info(
     {
       projectId: projectId.slice(0, 10),
-      query,
+      semanticQuery,
+      lexicalQuery,
     },
     'MCP 查询构建',
   );
@@ -190,7 +192,11 @@ export async function handleCodebaseRetrieval(
   logger.debug('SearchService 初始化完成');
 
   // 6. 执行搜索
-  const contextPack = await service.buildContextPack(query);
+  const contextPack = await service.buildContextPack({
+    semanticQuery,
+    lexicalQuery,
+    technicalTerms: technical_terms ?? [],
+  });
 
   // 详细日志：seeds 信息
   if (contextPack.seeds.length > 0) {

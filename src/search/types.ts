@@ -97,6 +97,13 @@ export interface ContextPackOptions {
   queryRewrite?: boolean;
 }
 
+export interface SearchQueryInput {
+  semanticQuery: string;
+  lexicalQuery?: string;
+  technicalTerms?: string[];
+  queryRewrite?: boolean;
+}
+
 // ===========================================
 // 搜索结果类型
 // ===========================================

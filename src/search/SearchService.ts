@@ -30,7 +30,7 @@ import {
 import { getGraphExpander } from './GraphExpander.js';
 import { createSearchConfigFingerprint } from './loadConfig.js';
 import { buildQueryCacheKey, getCachedContextPack, setCachedContextPack } from './QueryCache.js';
-import type { ContextPack, ScoredChunk, SearchConfig } from './types.js';
+import type { ContextPack, ScoredChunk, SearchConfig, SearchQueryInput } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
 
 export class SearchService {
@@ -68,10 +68,25 @@ export class SearchService {
   /**
    * 构建上下文包（用于问答/生成）
    */
-  async buildContextPack(query: string): Promise<ContextPack> {
+  async buildContextPack(input: string | SearchQueryInput): Promise<ContextPack> {
+    const queryInput =
+      typeof input === 'string'
+        ? { semanticQuery: input, lexicalQuery: input, technicalTerms: [] }
+        : {
+            semanticQuery: input.semanticQuery,
+            lexicalQuery: input.lexicalQuery ?? input.semanticQuery,
+            technicalTerms: input.technicalTerms ?? [],
+            queryRewrite: input.queryRewrite,
+          };
     const db = this.db as Database.Database;
+    const cacheQuery = JSON.stringify({
+      semanticQuery: queryInput.semanticQuery,
+      lexicalQuery: queryInput.lexicalQuery,
+      technicalTerms: queryInput.technicalTerms,
+      queryRewrite: queryInput.queryRewrite ?? false,
+    });
     const cacheKey = buildQueryCacheKey({
-      query,
+      query: cacheQuery,
       projectId: this.projectId,
       indexVersion: getIndexVersion(db),
       configFingerprint: this.configFingerprint,
@@ -86,7 +101,10 @@ export class SearchService {
     let t0 = Date.now();
 
     // 1. 混合召回
-    const candidates = await this.hybridRetrieve(query);
+    const candidates = await this.hybridRetrieve(
+      queryInput.semanticQuery,
+      queryInput.lexicalQuery,
+    );
     timingMs.retrieve = Date.now() - t0;
 
     // 2. 取 topM
@@ -94,7 +112,7 @@ export class SearchService {
     const topM = candidates.sort((a, b) => b.score - a.score).slice(0, this.config.fusedTopM);
 
     // 3. Rerank → seeds
-    const reranked = await this.rerank(query, topM);
+    const reranked = await this.rerank(queryInput.semanticQuery, topM);
     timingMs.rerank = Date.now() - t0;
 
     // 4. Smart TopK Cutoff
@@ -104,7 +122,7 @@ export class SearchService {
 
     // 5. 扩展（Phase 2 实现）
     t0 = Date.now();
-    const queryTokens = this.extractQueryTokens(query);
+    const queryTokens = this.extractQueryTokens(queryInput.lexicalQuery);
     const expanded = await this.expand(seeds, queryTokens);
     timingMs.expand = Date.now() - t0;
 
@@ -115,7 +133,7 @@ export class SearchService {
     timingMs.pack = Date.now() - t0;
 
     const pack = {
-      query,
+      query: queryInput.semanticQuery,
       seeds,
       expanded,
       files,
@@ -166,11 +184,14 @@ export class SearchService {
   /**
    * 混合召回：向量 + 词法
    */
-  private async hybridRetrieve(query: string): Promise<ScoredChunk[]> {
+  private async hybridRetrieve(
+    semanticQuery: string,
+    lexicalQuery: string,
+  ): Promise<ScoredChunk[]> {
     // 并行执行向量和词法召回
     const [vectorResults, lexicalResults] = await Promise.all([
-      this.vectorRetrieve(query),
-      this.lexicalRetrieve(query),
+      this.vectorRetrieve(semanticQuery),
+      this.lexicalRetrieve(lexicalQuery),
     ]);
 
     logger.debug(
