@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/wchiway/contextweaver-mcp.git"
   },
-  "homepage": "https://github.com/wchiway/contextweaver-mcp#readme",
+  "homepage": "https://contextweaver.ssvex.com",
   "private": false,
   "type": "module",
   "bin": {
