@@ -18,7 +18,7 @@
 **ContextWeaver** is a semantic retrieval engine purpose-built for AI coding assistants. It combines hybrid search (vector + lexical), intelligent context expansion, and token-aware packing to deliver precise, relevant, and context-complete code snippets to LLMs.
 
 <p align="center">
-  <img src="docs/architecture.png" alt="ContextWeaver architecture overview" width="800" />
+  <img src="docs/architecture_news.png" alt="ContextWeaver architecture overview" width="800" />
 </p>
 
 ## ✨ Core Features
@@ -661,7 +661,7 @@ This project is licensed under the MIT License.
 - [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) - high-performance syntax parsing
 - [LanceDB](https://lancedb.com/) - embedded vector database
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
-- [SiliconFlow](https://siliconflow.cn/) - recommended Embedding/Reranker API service
+- [Source](https://github.com/hsingjui/ContextWeaver) - Source repository
 
 ---
 

@@ -18,7 +18,7 @@
 **ContextWeaver** 是一个专为 AI 代码助手设计的语义检索引擎，采用混合搜索（向量 + 词法）、智能上下文扩展和 Token 感知打包策略，为 LLM 提供精准、相关且上下文完整的代码片段。
 
 <p align="center">
-  <img src="docs/architecture.png" alt="ContextWeaver 架构概览" width="800" />
+  <img src="docs/architecture_news.png" alt="ContextWeaver 架构概览" width="800" />
 </p>
 
 ## ✨ 核心特性
@@ -660,7 +660,7 @@ v1.4.0 已通过 `pending_marks` outbox 机制解决：FTS 写入成功但 vecto
 - [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) - 高性能语法解析
 - [LanceDB](https://lancedb.com/) - 嵌入式向量数据库
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
-- [SiliconFlow](https://siliconflow.cn/) - 推荐的 Embedding/Reranker API 服务
+- [Source](https://github.com/hsingjui/ContextWeaver) - 源仓库
 
 ---
 
