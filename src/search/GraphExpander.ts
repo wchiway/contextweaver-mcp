@@ -13,6 +13,7 @@ import { initDb } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { type ChunkRecord, getVectorStore, type VectorStore } from '../vectorStore/index.js';
 import { ChunkContentLoader } from './ChunkContentLoader.js';
+import { searchChunksFts } from './fts.js';
 import { createResolvers, type ImportResolver } from './resolvers/index.js';
 import type { ScoredChunk, SearchConfig } from './types.js';
 import { scoreChunkTokenOverlap } from './utils.js';
@@ -29,6 +30,8 @@ interface ExpandResult {
     breadcrumbCount: number;
     importCount: number;
     importDepth1Count: number;
+    reverseImportCount: number;
+    callsiteCount: number;
   };
 }
 
@@ -98,6 +101,8 @@ export class GraphExpander {
       breadcrumbCount: 0,
       importCount: 0,
       importDepth1Count: 0,
+      reverseImportCount: 0,
+      callsiteCount: 0,
     };
 
     if (seeds.length === 0) {
@@ -125,6 +130,14 @@ export class GraphExpander {
     const importChunks = await this.expandImports(seeds, existingKeys, queryTokens, stats);
     this.addChunks(importChunks, expandedChunks, existingKeys);
     stats.importCount = importChunks.length;
+
+    const reverseImportChunks = await this.expandReverseImports(seeds, existingKeys, queryTokens);
+    this.addChunks(reverseImportChunks, expandedChunks, existingKeys);
+    stats.reverseImportCount = reverseImportChunks.length;
+
+    const callsiteChunks = await this.expandCallsites(seeds, existingKeys);
+    this.addChunks(callsiteChunks, expandedChunks, existingKeys);
+    stats.callsiteCount = callsiteChunks.length;
 
     logger.debug(stats, '上下文扩展完成');
 
@@ -460,6 +473,134 @@ export class GraphExpander {
     }
 
     return Array.from(bestByKey.values());
+  }
+
+  /**
+   * 反向 import 扩展
+   *
+   * 查找导入了 seed 文件的调用方文件，并从中选择少量相关 chunks。
+   */
+  private async expandReverseImports(
+    seeds: ScoredChunk[],
+    existingKeys: Set<string>,
+    queryTokens?: Set<string>,
+  ): Promise<ScoredChunk[]> {
+    const { reverseImportFilesPerSeed, chunksPerImportFile, decayReverseImport } = this.config;
+    if (reverseImportFilesPerSeed <= 0) return [];
+
+    const seedFiles = new Set(seeds.map((s) => s.filePath));
+    const seedScoreByFile = this.buildSeedScoreByFile(seeds);
+    const rows = this.db?.prepare('SELECT path, content FROM files').all() as
+      | Array<{ path: string; content: string | null }>
+      | undefined;
+    if (!rows || rows.length === 0) return [];
+
+    const bestMatchByPath = new Map<string, number>();
+
+    for (const row of rows) {
+      if (!row.content || seedFiles.has(row.path)) continue;
+
+      const resolver = this.resolvers.find((item) => item.supports(row.path));
+      if (!resolver) continue;
+
+      const imports = resolver.extract(row.content);
+      for (const importStr of imports) {
+        const target = resolver.resolve(importStr, row.path, this.allFilePaths as Set<string>);
+        if (!target || !seedFiles.has(target)) continue;
+
+        const score = seedScoreByFile.get(target) ?? 0;
+        const current = bestMatchByPath.get(row.path);
+        if (current === undefined || score > current) {
+          bestMatchByPath.set(row.path, score);
+        }
+      }
+    }
+
+    const topPaths = Array.from(bestMatchByPath.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, reverseImportFilesPerSeed * Math.max(1, seedFiles.size));
+
+    if (topPaths.length === 0) return [];
+
+    const chunksMap = await this.vectorStore?.getFilesChunks(topPaths.map(([path]) => path));
+    if (!chunksMap) return [];
+
+    const result: ScoredChunk[] = [];
+    for (const [path, score] of topPaths) {
+      const chunks = this.selectImportChunks(
+        chunksMap.get(path) ?? [],
+        chunksPerImportFile,
+        queryTokens,
+      );
+
+      for (const chunk of chunks) {
+        const key = `${chunk.file_path}#${chunk.chunk_index}`;
+        if (existingKeys.has(key)) continue;
+        result.push({
+          filePath: chunk.file_path,
+          chunkIndex: chunk.chunk_index,
+          score: score * decayReverseImport,
+          source: 'reverse_import',
+          record: { ...chunk, _distance: 0 },
+        });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 轻量调用点扩展
+   *
+   * 从 seed breadcrumb 提取可能的符号名，用 chunk FTS 查找包含调用痕迹的 chunks。
+   */
+  private async expandCallsites(
+    seeds: ScoredChunk[],
+    existingKeys: Set<string>,
+  ): Promise<ScoredChunk[]> {
+    const { callsiteChunksPerSeed, decayCallsite } = this.config;
+    if (callsiteChunksPerSeed <= 0) return [];
+
+    const symbols = Array.from(
+      new Set(
+        seeds
+          .map((seed) => seed.record.breadcrumb.split(' > ').at(-1) ?? '')
+          .map((tail) => tail.replace(/^(?:async\s+)?(?:class|function|method|const|let|var)\s+/, '').trim())
+          .filter((tail) => /^[A-Za-z_$][\w$]*$/.test(tail)),
+      ),
+    );
+    if (symbols.length === 0) return [];
+
+    const hits = symbols.flatMap((symbol) =>
+      searchChunksFts(this.db as Database.Database, `${symbol}(`, callsiteChunksPerSeed),
+    );
+    if (hits.length === 0) return [];
+
+    const paths = Array.from(new Set(hits.map((hit) => hit.filePath)));
+    const chunksMap = await this.vectorStore?.getFilesChunks(paths);
+    if (!chunksMap) return [];
+
+    const result: ScoredChunk[] = [];
+    const seedScore = Math.max(...seeds.map((seed) => seed.score));
+    for (const hit of hits) {
+      const chunk = (chunksMap.get(hit.filePath) ?? []).find((item) => item.chunk_index === hit.chunkIndex);
+      if (!chunk) continue;
+
+      const key = `${chunk.file_path}#${chunk.chunk_index}`;
+      if (existingKeys.has(key)) continue;
+
+      result.push({
+        filePath: chunk.file_path,
+        chunkIndex: chunk.chunk_index,
+        score: seedScore * decayCallsite,
+        source: 'callsite',
+        record: { ...chunk, _distance: 0 },
+      });
+    }
+
+    return Array.from(
+      new Map(result.map((chunk) => [`${chunk.filePath}#${chunk.chunkIndex}`, chunk])).values(),
+    ).slice(0, callsiteChunksPerSeed * Math.max(1, seeds.length));
   }
 
   // =========================================

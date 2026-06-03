@@ -22,9 +22,13 @@ export const SEARCH_CONFIG_BOUNDS = {
   breadcrumbExpandLimit: { min: 1, max: 5, integer: true },
   importFilesPerSeed: { min: 0, max: 5, integer: true },
   chunksPerImportFile: { min: 1, max: 5, integer: true },
+  reverseImportFilesPerSeed: { min: 0, max: 5, integer: true },
+  callsiteChunksPerSeed: { min: 0, max: 5, integer: true },
   decayNeighbor: { min: 0.5, max: 0.9, integer: false },
   decayBreadcrumb: { min: 0.4, max: 0.8, integer: false },
   decayImport: { min: 0.3, max: 0.7, integer: false },
+  decayReverseImport: { min: 0.3, max: 0.7, integer: false },
+  decayCallsite: { min: 0.3, max: 0.7, integer: false },
   decayDepth: { min: 0.5, max: 0.9, integer: false },
   maxSegmentsPerFile: { min: 1, max: 5, integer: true },
   maxTotalChars: { min: 20000, max: 80000, integer: true },
@@ -60,9 +64,13 @@ export const DEFAULT_CONFIG: SearchConfig = {
   breadcrumbExpandLimit: 3, // E2: Max ancestor breadcrumbs (class/function scope). Range: 1–5.
   importFilesPerSeed: 3, // E3: Cross-file import files to resolve per seed chunk. Range: 0–5. Set to 3 to enable import-graph expansion for better cross-file context.
   chunksPerImportFile: 3, // E3: Chunks to pull from each resolved import file. Range: 1–5. Set to 3 for balanced coverage of imported symbols.
+  reverseImportFilesPerSeed: 2, // E4: Files importing a seed file. Range: 0–5. Bounded reverse dependency context.
+  callsiteChunksPerSeed: 2, // E5: Chunks matching likely call-sites for seed symbols. Range: 0–5.
   decayNeighbor: 0.8, // Score decay per E1 hop. Range: 0.5–0.9. Higher = neighbors stay relevant longer.
   decayBreadcrumb: 0.7, // Score decay per E2 level. Range: 0.4–0.8.
   decayImport: 0.6, // Score decay for E3 import chunks. Range: 0.3–0.7. Lower than E1/E2 since cross-file is less certain.
+  decayReverseImport: 0.5, // Score decay for reverse-import chunks. Range: 0.3–0.7.
+  decayCallsite: 0.5, // Score decay for call-site chunks. Range: 0.3–0.7.
   decayDepth: 0.7, // General depth decay multiplier. Range: 0.5–0.9.
 
   // ── ContextPacker (上下文打包) ──

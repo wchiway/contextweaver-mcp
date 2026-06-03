@@ -34,9 +34,13 @@ export interface SearchConfig {
   breadcrumbExpandLimit: number;
   importFilesPerSeed: number;
   chunksPerImportFile: number;
+  reverseImportFilesPerSeed: number;
+  callsiteChunksPerSeed: number;
   decayNeighbor: number;
   decayBreadcrumb: number;
   decayImport: number;
+  decayReverseImport: number;
+  decayCallsite: number;
   decayDepth: number;
 
   // ContextPacker
@@ -109,7 +113,14 @@ export interface SearchQueryInput {
 // ===========================================
 
 /** Chunk 来源类型 */
-export type ChunkSource = 'vector' | 'lexical' | 'neighbor' | 'breadcrumb' | 'import';
+export type ChunkSource =
+  | 'vector'
+  | 'lexical'
+  | 'neighbor'
+  | 'breadcrumb'
+  | 'import'
+  | 'reverse_import'
+  | 'callsite';
 
 /** 带得分的 Chunk */
 export interface ScoredChunk {
