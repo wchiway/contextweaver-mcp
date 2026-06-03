@@ -14,3 +14,5 @@ test-*
 # Local tooling
 .serena/
 *.tgz
+docs/
+CLAUDE.md
