@@ -59,6 +59,7 @@ export class SearchService {
   private db: Database.Database | null = null;
   private config: SearchConfig;
   private configFingerprint: string;
+  private initialized = false;
 
   constructor(projectId: string, _projectPath: string, config?: Partial<SearchConfig>) {
     this.projectId = projectId;
@@ -67,6 +68,8 @@ export class SearchService {
   }
 
   async init(): Promise<void> {
+    if (this.initialized) return;
+
     const embeddingConfig = getEmbeddingConfig();
     this.indexer = await getIndexer(this.projectId, embeddingConfig.dimensions);
     this.vectorStore = await getVectorStore(this.projectId, embeddingConfig.dimensions);
@@ -80,6 +83,8 @@ export class SearchService {
       const error = err as { message?: string };
       logger.warn({ error: error.message }, 'bootstrap 失败，继续启动');
     }
+
+    this.initialized = true;
   }
 
   // 公开接口

@@ -193,14 +193,19 @@ export async function handleCodebaseRetrieval(
   // 4. 延迟导入 SearchService（避免 MCP 启动时加载 native 模块）
   const { SearchService } = await import('../../search/SearchService.js');
   const { getSearchConfigOverrides } = await import('../../search/loadConfig.js');
+  const { getReusableSearchService } = await import('./searchServiceRegistry.js');
 
   // 5. 创建 SearchService 实例
   const configOverrides = {
     ...getSearchConfigOverrides(),
     ...requestConfigOverrides(args),
   };
-  const service = new SearchService(projectId, repo_path, configOverrides);
-  await service.init();
+  const service = await getReusableSearchService({
+    projectId,
+    repoPath: repo_path,
+    config: configOverrides,
+    create: (id, path, config) => new SearchService(id, path, config),
+  });
   logger.debug('SearchService 初始化完成');
 
   // 6. 执行搜索
