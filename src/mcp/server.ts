@@ -19,8 +19,10 @@ import {
   handleFindReferences,
   handleGetSymbolDefinition,
   handleListFiles,
+  handleListSymbols,
   handleStats,
   listFilesSchema,
+  listSymbolsSchema,
   statsToolSchema,
 } from './tools/index.js';
 
@@ -289,6 +291,51 @@ Limits:
       required: ['repo_path', 'symbol'],
     },
   },
+  {
+    name: 'list-symbols',
+    description: `List all symbols (functions, classes, interfaces, etc.) in the codebase with optional filtering.
+
+Use this when:
+- You want an overview of available symbols in a directory/file
+- You need to browse the symbol structure of the codebase
+- You want to filter symbols by type, language, or path
+
+Returns:
+- Grouped by file, ordered by line number
+- Symbol kind (function, class, interface, etc.)
+- Line range for each symbol
+- Container information (e.g., which class a method belongs to)`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'The absolute file system path to the repository root.',
+        },
+        path_filter: {
+          type: 'string',
+          description: 'Optional path filter (prefix or glob pattern, e.g., "src/search" or "**/*.ts")',
+        },
+        kind_filter: {
+          type: 'string',
+          description: 'Optional comma-separated symbol kinds (e.g., "function,class,interface")',
+        },
+        language: {
+          type: 'string',
+          description: 'Optional language filter (e.g., "typescript", "python", "go")',
+        },
+        source: {
+          type: 'string',
+          description: 'Optional source filter ("tree-sitter" or "ctags")',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of symbols to return (default: 100, max: 500)',
+        },
+      },
+      required: ['repo_path'],
+    },
+  },
 ];
 
 // ===========================================
@@ -370,6 +417,10 @@ export async function startMcpServer(): Promise<void> {
         case 'get-symbol-definition': {
           const parsed = getSymbolDefinitionSchema.parse(args);
           return await handleGetSymbolDefinition(parsed, onProgress);
+        }
+        case 'list-symbols': {
+          const parsed = listSymbolsSchema.parse(args);
+          return await handleListSymbols(parsed, onProgress);
         }
         default:
           throw new Error(`Unknown tool: ${name}`);

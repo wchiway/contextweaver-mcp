@@ -11,6 +11,7 @@ import {
 } from '../chunking/index.js';
 import { extractCtagsSymbols } from '../semantic/ctags.js';
 import { extractTreeSitterSymbols } from '../semantic/treeSitterTags.js';
+import { extractCallSites, type CallSite } from '../semantic/treeSitterCalls.js';
 import type { SemanticSymbol } from '../semantic/types.js';
 import { readFileWithEncoding } from '../utils/encoding.js';
 import { sha256 } from './hash.js';
@@ -95,6 +96,7 @@ export interface ProcessResult {
   content: string | null;
   chunks: ProcessedChunk[];
   semanticSymbols?: SemanticSymbol[];
+  callSites?: CallSite[];
   language: string;
   mtime: number;
   size: number;
@@ -212,6 +214,7 @@ async function processFile(
 
     let chunks: ProcessedChunk[] = [];
     let semanticSymbols: SemanticSymbol[] | undefined = undefined;
+    let callSites: CallSite[] | undefined = undefined;
     let tree: Parser.Tree | null = null;
     let grammar: unknown = null;
 
@@ -248,6 +251,9 @@ async function processFile(
         hash,
         language,
       });
+
+      // 调用提取：复用已解析的 AST
+      callSites = extractCallSites(tree, language);
     } else {
       semanticSymbols = await extractCtagsSymbols({ absPath, relPath, hash, language });
     }
@@ -259,6 +265,7 @@ async function processFile(
       content,
       chunks,
       semanticSymbols,
+      callSites,
       language,
       mtime,
       size,

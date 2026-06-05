@@ -21,6 +21,7 @@ import {
 } from '../db/index.js';
 import { closeAllIndexers, getIndexer } from '../indexer/index.js';
 import { invalidateAllExpanderCaches } from '../search/GraphExpander.js';
+import { buildAndStoreCallGraph } from '../semantic/callGraphBuilder.js';
 import { runOptionalLspEnrichment } from '../semantic/lsp.js';
 import { logger } from '../utils/logger.js';
 import { closeAllVectorStores } from '../vectorStore/index.js';
@@ -197,6 +198,20 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
         language: r.language,
       })),
     });
+
+    // 构建调用图
+    const filesWithCalls = changedResults
+      .filter((r) => r.callSites && r.callSites.length > 0)
+      .map((r) => ({
+        path: r.relPath,
+        hash: r.hash,
+        callSites: r.callSites!,
+      }));
+
+    if (filesWithCalls.length > 0) {
+      const edgeCount = buildAndStoreCallGraph(db, filesWithCalls);
+      logger.info({ edgeCount, fileCount: filesWithCalls.length }, '调用图已更新');
+    }
 
     // 统计结果
     const stats: ScanStats = {

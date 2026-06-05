@@ -408,7 +408,7 @@ function migrateToV5(db: Database.Database): void {
       symbol_name TEXT NOT NULL,
       source_line INTEGER NOT NULL,
       target_line INTEGER,
-      provider TEXT NOT NULL CHECK(provider IN ('lsp')),
+      provider TEXT NOT NULL CHECK(provider IN ('lsp', 'tree-sitter')),
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_path, source_hash);
