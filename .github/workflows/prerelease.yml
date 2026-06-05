@@ -1,14 +1,21 @@
-name: Release
+name: Prerelease
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*-alpha.*"
+      - "v*-beta.*"
+      - "v*-rc.*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g., 0.1.1) (must have tag v0.1.1)"
+        description: "Prerelease version to publish (e.g., 1.5.3-alpha.0) (must have tag v1.5.3-alpha.0)"
         required: true
+        type: string
+      npm_tag:
+        description: "NPM dist-tag to publish under"
+        required: false
+        default: "next"
         type: string
 
 permissions:
@@ -16,9 +23,9 @@ permissions:
   id-token: write
 
 jobs:
-  build-and-publish:
-    name: Build and Publish
-    if: ${{ (github.event_name == 'workflow_dispatch' && !contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && !contains(github.ref_name, '-')) }}
+  build-and-publish-prerelease:
+    name: Build and Publish Prerelease
+    if: ${{ (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && contains(github.ref_name, '-')) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -28,18 +35,29 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
 
-      - name: Resolve release version
+      - name: Resolve prerelease version
         id: rel
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             INPUT="${{ github.event.inputs.version }}"
             VER="${INPUT#v}"
-            echo "tag=v$VER" >> "$GITHUB_OUTPUT"
-            echo "ver=$VER" >> "$GITHUB_OUTPUT"
+            NPM_TAG="${{ github.event.inputs.npm_tag }}"
           else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "ver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            VER="${GITHUB_REF_NAME#v}"
+            NPM_TAG="next"
           fi
+
+          case "$VER" in
+            *-*) ;;
+            *)
+              echo "Prerelease version must contain a hyphen: $VER"
+              exit 1
+              ;;
+          esac
+
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=${NPM_TAG:-next}" >> "$GITHUB_OUTPUT"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -52,7 +70,7 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
           cache: "pnpm"
-      
+
       - name: Upgrade npm for Trusted Publishing (OIDC)
         run: |
           npm i -g npm@^11.5.1
@@ -84,25 +102,23 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to NPM
+      - name: Publish prerelease to NPM
         if: github.event_name != 'workflow_dispatch' || steps.npmcheck.outputs.exists != 'true'
-        run: npm publish --no-git-checks --access public --provenance
+        run: npm publish --no-git-checks --access public --provenance --tag ${{ steps.rel.outputs.npm_tag }}
 
-      # push tag 和手动重跑都创建/更新 GitHub Release（手动重跑时显式指定 tag_name）
-      - name: Create GitHub Release
-        if: startsWith(steps.rel.outputs.tag, 'v')
+      - name: Create GitHub Prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: true
           body: |
-            ## 🚀 ContextWeaver ${{ steps.rel.outputs.tag }}
+            ## ContextWeaver ${{ steps.rel.outputs.tag }} prerelease
 
             ### Installation
             ```bash
-            npm install -g @chiway/contextweaver
+            npm install -g @chiway/contextweaver@${{ steps.rel.outputs.npm_tag }}
             # or
-            pnpm add -g @chiway/contextweaver
+            pnpm add -g @chiway/contextweaver@${{ steps.rel.outputs.npm_tag }}
             ```
