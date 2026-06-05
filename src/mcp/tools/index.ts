@@ -6,4 +6,5 @@ export { codebaseRetrievalSchema, handleCodebaseRetrieval } from './codebaseRetr
 export { findReferencesSchema, handleFindReferences } from './findReferences.js';
 export { getSymbolDefinitionSchema, handleGetSymbolDefinition } from './getSymbolDefinition.js';
 export { handleListFiles, listFilesSchema } from './listFiles.js';
+export { handleListSymbols, listSymbolsSchema } from './listSymbols.js';
 export { handleStats, statsToolSchema } from './stats.js';

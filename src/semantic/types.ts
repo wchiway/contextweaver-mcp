@@ -23,5 +23,5 @@ export interface SemanticEdge {
   symbolName: string;
   sourceLine: number;
   targetLine: number | null;
-  provider: 'lsp';
+  provider: 'lsp' | 'tree-sitter';
 }
