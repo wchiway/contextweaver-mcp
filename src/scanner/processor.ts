@@ -1,3 +1,4 @@
+import Parser from '@keqingmoe/tree-sitter';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import {
   SemanticSplitter,
 } from '../chunking/index.js';
 import { extractCtagsSymbols } from '../semantic/ctags.js';
+import { extractTreeSitterSymbols } from '../semantic/treeSitterTags.js';
 import type { SemanticSymbol } from '../semantic/types.js';
 import { readFileWithEncoding } from '../utils/encoding.js';
 import { sha256 } from './hash.js';
@@ -209,15 +211,21 @@ async function processFile(
     }
 
     let chunks: ProcessedChunk[] = [];
-    let usedAstChunks = false;
+    let semanticSymbols: SemanticSymbol[] | undefined = undefined;
+    let tree: Parser.Tree | null = null;
+    let grammar: unknown = null;
 
     if (isLanguageSupported(language)) {
       try {
         const parser = await getParser(language);
         if (parser) {
-          const tree = parser.parse(content);
+          tree = parser.parse(content);
           chunks = splitter.split(tree, content, relPath, language);
-          usedAstChunks = chunks.length > 0;
+
+          // AST 解析成功，保存 grammar 用于符号提取
+          if (chunks.length > 0) {
+            grammar = parser.getLanguage();
+          }
         }
       } catch (err) {
         const error = err as { message?: string };
@@ -229,9 +237,20 @@ async function processFile(
       chunks = splitter.splitPlainText(content, relPath, language);
     }
 
-    const semanticSymbols = usedAstChunks
-      ? undefined
-      : await extractCtagsSymbols({ absPath, relPath, hash, language });
+    // 符号提取策略：
+    // 1. AST 成功 → 用 tree-sitter tags（主路径）
+    // 2. AST 失败 → 用 ctags 兜底（需要外部二进制）
+    if (tree && grammar) {
+      semanticSymbols = await extractTreeSitterSymbols({
+        tree,
+        grammar,
+        relPath,
+        hash,
+        language,
+      });
+    } else {
+      semanticSymbols = await extractCtagsSymbols({ absPath, relPath, hash, language });
+    }
 
     return {
       absPath,

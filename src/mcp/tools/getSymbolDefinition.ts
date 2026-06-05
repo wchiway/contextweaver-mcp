@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { generateProjectId, initDb } from '../../db/index.js';
 import { ChunkContentLoader } from '../../search/ChunkContentLoader.js';
@@ -172,6 +173,18 @@ export async function handleGetSymbolDefinition(
 
   const db = initDb(projectId);
   try {
+    // 策略 1: 优先查询 semantic_symbols 表（tree-sitter tags / ctags）
+    const symbolResults = querySemanticSymbols(db, symbol, hint_path, max_results);
+    if (symbolResults.length > 0) {
+      logger.info({ count: symbolResults.length }, 'Found definitions from semantic_symbols');
+      const formatted = await formatSymbolResults(db, symbolResults);
+      return formatTextResponse(
+        `Found ${formatted.length} symbol definitions for "${symbol}"\n\n${formatted.join('\n\n---\n\n')}`,
+      );
+    }
+
+    // 策略 2: 兜底用 FTS + 正则猜测（向后兼容，用于没有符号表的旧索引）
+    logger.info('No semantic_symbols found, falling back to FTS + pattern matching');
     const hits = searchChunksFts(db, symbol, Math.max(max_results * 5, 20));
     const uniquePaths = Array.from(new Set(hits.map((hit) => hit.filePath)));
     const vectorStore = await getVectorStore(projectId);
@@ -254,4 +267,84 @@ export async function handleGetSymbolDefinition(
   } finally {
     db.close();
   }
+}
+
+/**
+ * 查询 semantic_symbols 表（tree-sitter tags / ctags 提取的符号）
+ */
+interface SymbolRow {
+  path: string;
+  name: string;
+  kind: string;
+  source: string;
+  start_line: number;
+  end_line: number | null;
+}
+
+function querySemanticSymbols(
+  db: Database.Database,
+  symbol: string,
+  hintPath: string | undefined,
+  maxResults: number,
+): SymbolRow[] {
+  // 查询定义点符号（排除引用点，如 call/reference）
+  const stmt = db.prepare<unknown[], SymbolRow>(`
+    SELECT path, name, kind, source, start_line, end_line
+    FROM semantic_symbols
+    WHERE name = ? AND kind NOT IN ('call', 'reference')
+    ORDER BY
+      CASE WHEN source = 'tree-sitter' THEN 0 ELSE 1 END,
+      CASE
+        WHEN path LIKE 'src/%' THEN 0
+        WHEN path LIKE 'tests/%' THEN 2
+        ELSE 1
+      END,
+      start_line ASC
+  `);
+
+  const rows = stmt.all(symbol);
+
+  // 如果有 hint_path，按路径前缀匹配度排序
+  if (hintPath && rows.length > 1) {
+    rows.sort((a, b) => {
+      const scoreA = commonPrefixLength(hintPath, a.path);
+      const scoreB = commonPrefixLength(hintPath, b.path);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return a.path.localeCompare(b.path);
+    });
+  }
+
+  return rows.slice(0, maxResults);
+}
+
+/**
+ * 格式化符号表查询结果为 markdown 代码块
+ */
+async function formatSymbolResults(
+  db: Database.Database,
+  symbols: SymbolRow[],
+): Promise<string[]> {
+  const fileContentStmt = db.prepare<[string], FileContentRow>('SELECT content FROM files WHERE path = ?');
+  const results: string[] = [];
+
+  for (const sym of symbols) {
+    const row = fileContentStmt.get(sym.path);
+    if (!row?.content) {
+      continue;
+    }
+
+    // 提取符号定义所在行的代码片段
+    const lines = row.content.split('\n');
+    const startIdx = Math.max(0, sym.start_line - 1);
+    const endIdx = Math.min(lines.length, (sym.end_line ?? sym.start_line + 5) - 1 + 1);
+    const snippet = lines.slice(startIdx, endIdx).join('\n');
+
+    const header = `## ${sym.path} (L${sym.start_line}${sym.end_line ? `-L${sym.end_line}` : ''})`;
+    const meta = `> kind: ${sym.kind} | source: ${sym.source}`;
+    const code = `\`\`\`${detectLanguage(sym.path)}\n${snippet}\n\`\`\``;
+
+    results.push([header, meta, code].join('\n'));
+  }
+
+  return results;
 }
