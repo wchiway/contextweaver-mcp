@@ -12,7 +12,7 @@ import type Database from 'better-sqlite3';
 import { getRerankerClient } from '../api/reranker.js';
 import { getEmbeddingConfig } from '../config.js';
 import { bootstrap } from '../db/bootstrap.js';
-import { getIndexVersion, incrementStat, initDb } from '../db/index.js';
+import { getIndexVersion, getReadyVectorFileHashes, incrementStat, initDb } from '../db/index.js';
 import { getIndexer, type Indexer } from '../indexer/index.js';
 import { isDebugEnabled, logger } from '../utils/logger.js';
 import type { SearchResult as VectorSearchResult } from '../vectorStore/index.js';
@@ -253,21 +253,27 @@ export class SearchService {
    */
   private async vectorRetrieve(query: string): Promise<ScoredChunk[]> {
     if (!this.indexer) throw new Error('SearchService not initialized');
+    if (!this.db) throw new Error('SearchService not initialized');
 
     const results = await this.indexer.textSearch(query, this.config.vectorTopK);
     if (!results) return [];
 
-    // 按距离排序并转换
-    return results
-      .sort((a, b) => a._distance - b._distance)
+    const sorted = results.sort((a, b) => a._distance - b._distance);
+    const readyHashes = getReadyVectorFileHashes(
+      this.db,
+      Array.from(new Set(sorted.map((r) => r.file_path))),
+    );
+
+    return sorted
+      .filter((r) => readyHashes.get(r.file_path) === r.file_hash)
       .slice(0, this.config.vectorTopM)
       .map((r: VectorSearchResult, rank: number) => ({
         filePath: r.file_path,
         chunkIndex: r.chunk_index,
-        score: 1 / (1 + r._distance), // 转为相似度（用于调试）
+        score: 1 / (1 + r._distance),
         source: 'vector' as const,
         record: r,
-        _rank: rank, // 用于 RRF
+        _rank: rank,
       }));
   }
 
@@ -324,11 +330,17 @@ export class SearchService {
 
     // 从 VectorStore 批量获取完整的 chunk 信息（性能优化：N 次查询 → 1 次）
     const allFilePaths = Array.from(fileChunksMap.keys());
-    const chunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
+    const readyHashes = getReadyVectorFileHashes(this.db as Database.Database, allFilePaths);
+    const readyFilePaths = allFilePaths.filter((filePath) => readyHashes.has(filePath));
+    const chunksMap = await this.vectorStore?.getFilesChunks(readyFilePaths);
     if (!chunksMap) return allChunks;
 
     for (const [filePath, chunkScores] of fileChunksMap) {
-      const chunks = chunksMap.get(filePath) ?? [];
+      const readyHash = readyHashes.get(filePath);
+      if (!readyHash) continue;
+      const chunks = (chunksMap.get(filePath) ?? []).filter(
+        (chunk) => chunk.file_hash === readyHash,
+      );
 
       for (const chunk of chunks) {
         const score = chunkScores.get(chunk.chunk_index);
@@ -386,17 +398,22 @@ export class SearchService {
       );
     }
 
-    // 3. 批量获取所有 FTS 命中文件的 chunks（性能优化：N 次查询 → 1 次）
+    // 3. 批量获取所有 FTS 命中文件的 ready chunks（性能优化：N 次查询 → 1 次）
     const allFilePaths = fileResults.map((r) => r.path);
-    const chunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
+    const readyHashes = getReadyVectorFileHashes(this.db as Database.Database, allFilePaths);
+    const readyFilePaths = allFilePaths.filter((filePath) => readyHashes.has(filePath));
+    const chunksMap = await this.vectorStore?.getFilesChunks(readyFilePaths);
     if (!chunksMap) return [];
 
     // 批量加载所有 chunk 的正文（C2：不再依赖 LanceDB display_code）
     // 使用 start_index/end_index 切片（CRIT-A：与 displayCode 同源；UTF-16 字符域）
     const allChunkSlices: Array<{ filePath: string; start_index: number; end_index: number }> = [];
-    for (const filePath of allFilePaths) {
-      const chunks = chunksMap.get(filePath);
-      if (!chunks) continue;
+    for (const filePath of readyFilePaths) {
+      const readyHash = readyHashes.get(filePath);
+      const chunks = readyHash
+        ? (chunksMap.get(filePath) ?? []).filter((chunk) => chunk.file_hash === readyHash)
+        : [];
+      if (chunks.length === 0) continue;
       for (const c of chunks) {
         allChunkSlices.push({
           filePath: c.file_path,
@@ -415,8 +432,11 @@ export class SearchService {
     for (const { path: filePath, score: fileScore } of fileResults) {
       if (totalChunks >= this.config.lexTotalChunks) break;
 
-      const chunks = chunksMap.get(filePath);
-      if (!chunks || chunks.length === 0) continue;
+      const readyHash = readyHashes.get(filePath);
+      const chunks = readyHash
+        ? (chunksMap.get(filePath) ?? []).filter((chunk) => chunk.file_hash === readyHash)
+        : [];
+      if (chunks.length === 0) continue;
 
       // 对每个 chunk 计算 token overlap 得分
       const scoredChunks = chunks.map((chunk) => {

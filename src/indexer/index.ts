@@ -18,6 +18,8 @@ import {
   deletePendingMarks,
   getLanceDbMigrationState,
   insertPendingMarks,
+  markVectorManifestFailed,
+  upsertVectorManifestPending,
 } from '../db/index.js';
 import type { ProcessResult } from '../scanner/processor.js';
 import {
@@ -384,18 +386,31 @@ export class Indexer {
         }
       }
 
-      // ===== 阶段 4-6: 伪事务 (LanceDB → FTS → SQLite mark) =====
-      // 任一阶段失败均执行补偿：
-      // - LanceDB 失败：clearVectorIndexHash，下次重试
-      // - FTS 失败：反向删除 LanceDB 新 hash 的 chunks，保留旧版本，不写 mark
-      // - SQLite mark 失败：LanceDB 与 FTS 已有新版本，下次扫描会因 hash 匹配跳过自愈（可接受）
+      // ===== 阶段 4-6: SQLite manifest → LanceDB materialization → ready mark =====
       if (filesToUpsert.length > 0) {
-        // 阶段 4: LanceDB 写入
+        const manifestItems = filesToUpsert.map((f) => ({
+          path: f.path,
+          hash: f.hash,
+          chunkCount: f.records.length,
+          embeddingDimensions: this.vectorDim,
+        }));
+
+        // 阶段 4: SQLite 先声明权威目标状态（FTS + outbox + vector_manifest pending）
         try {
-          await this.vectorStore?.batchUpsertFiles(filesToUpsert);
+          const declareTx = db.transaction(() => {
+            if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
+              batchUpsertChunkFts(db, ftsChunks);
+            }
+            insertPendingMarks(db, successFiles);
+            upsertVectorManifestPending(db, manifestItems);
+          });
+          declareTx();
         } catch (err) {
           const error = err as { message?: string; stack?: string };
-          logger.error({ error: error.message, stack: error.stack }, 'LanceDB 批量写入失败');
+          logger.error(
+            { error: error.message, stack: error.stack, batch: `${batchNum}/${totalBatches}` },
+            'SQLite FTS/manifest 写入失败，跳过 LanceDB 物化',
+          );
           clearVectorIndexHash(
             db,
             batchFiles.map((f) => f.path),
@@ -405,58 +420,26 @@ export class Indexer {
           continue;
         }
 
-        // 阶段 5: FTS + outbox 写入（单事务，失败时回滚 LanceDB）
-        //
-        // batchUpsertChunkFts 自带 per-file 整体清理（C3 修复），无需前置 delete。
-        // outbox 用途：FTS 已写但 stage6 mark 阶段失败时，启动时 replayPendingMarks
-        // 重放，避免下次扫描重复 embedding（C1 修复）。
-        if (isChunksFtsInitialized(db) && ftsChunks.length > 0) {
-          try {
-            const ftsAndOutboxTx = db.transaction(() => {
-              batchUpsertChunkFts(db, ftsChunks);
-              insertPendingMarks(db, successFiles);
-            });
-            ftsAndOutboxTx();
-          } catch (err) {
-            const error = err as { message?: string; stack?: string };
-            logger.error(
-              { error: error.message, stack: error.stack, batch: `${batchNum}/${totalBatches}` },
-              'FTS/outbox 写入失败，回滚 LanceDB 新版本',
-            );
-            // 补偿：反向删除本批次刚 upsert 的新 hash 记录
-            try {
-              await this.vectorStore?.deleteFilesByHash(
-                filesToUpsert.map((f) => ({ path: f.path, hash: f.hash })),
-              );
-            } catch (rollbackErr) {
-              const rbError = rollbackErr as { message?: string };
-              logger.error(
-                { error: rbError.message },
-                'LanceDB 回滚失败，孤儿数据将由下次 GC 清理',
-              );
-            }
-            clearVectorIndexHash(
-              db,
-              batchFiles.map((f) => f.path),
-            );
-            totalErrors += batchFiles.length;
-            completedChunks += batchTexts.length;
-            continue;
-          }
-        } else if (successFiles.length > 0) {
-          // FTS 未初始化时，仍需写 outbox 保证 stage6 失败可重放
-          try {
-            insertPendingMarks(db, successFiles);
-          } catch (err) {
-            const error = err as { message?: string };
-            logger.warn({ error: error.message }, 'outbox 写入失败（无 FTS 路径），继续 stage6');
-          }
+        // 阶段 5: LanceDB 按 manifest 物化派生向量索引
+        try {
+          await this.vectorStore?.batchUpsertFiles(filesToUpsert);
+        } catch (err) {
+          const error = err as { message?: string; stack?: string };
+          logger.error({ error: error.message, stack: error.stack }, 'LanceDB 批量写入失败');
+          clearVectorIndexHash(
+            db,
+            batchFiles.map((f) => f.path),
+          );
+          markVectorManifestFailed(
+            db,
+            successFiles.map((f) => ({ path: f.path, hash: f.hash, error: error.message })),
+          );
+          totalErrors += batchFiles.length;
+          completedChunks += batchTexts.length;
+          continue;
         }
 
-        // 阶段 6: SQLite 标记收敛 + 清 outbox（单事务）
-        //
-        // 失败场景：磁盘满 / WAL 锁竞争。失败时 outbox 保留，
-        // 下次启动 replayPendingMarks 重放（C1 修复核心）。
+        // 阶段 6: ready mark + 清 outbox（失败时 pending_marks 会在下次启动重放）
         if (successFiles.length > 0) {
           try {
             const markTx = db.transaction(() => {
@@ -471,9 +454,8 @@ export class Indexer {
             const error = err as { message?: string };
             logger.warn(
               { error: error.message, batch: `${batchNum}/${totalBatches}` },
-              'stage6 mark 失败，outbox 已保留，下次启动将重放',
+              'stage6 mark 失败，outbox 和 manifest pending 已保留，下次启动将重放',
             );
-            // 不抛错，不补偿：LanceDB+FTS 已成功，下次启动 replay 会收敛
           }
         }
       }

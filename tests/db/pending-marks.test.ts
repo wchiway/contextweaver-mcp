@@ -12,14 +12,19 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  batchUpdateVectorIndexHash,
   countPendingMarks,
   deletePendingMarks,
+  getReadyVectorFileHashes,
+  getVectorManifestCounts,
   insertPendingMarks,
+  markVectorManifestFailed,
   migrateSchema,
   replayPendingMarks,
+  upsertVectorManifestPending,
 } from '../../src/db/index.js';
 
-function setupV3Schema(db: Database.Database): void {
+function setupV4Schema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE files (
       path TEXT PRIMARY KEY,
@@ -50,9 +55,9 @@ function insertFile(
 }
 
 function getVectorIndexHash(db: Database.Database, path: string): string | null {
-  const row = db
-    .prepare('SELECT vector_index_hash FROM files WHERE path = ?')
-    .get(path) as { vector_index_hash: string | null } | undefined;
+  const row = db.prepare('SELECT vector_index_hash FROM files WHERE path = ?').get(path) as
+    | { vector_index_hash: string | null }
+    | undefined;
   return row?.vector_index_hash ?? null;
 }
 
@@ -61,7 +66,7 @@ describe('pending_marks outbox (C1)', () => {
 
   beforeEach(() => {
     db = new Database(':memory:');
-    setupV3Schema(db);
+    setupV4Schema(db);
   });
 
   afterEach(() => {
@@ -70,16 +75,14 @@ describe('pending_marks outbox (C1)', () => {
 
   it('[C1-1] migrateSchema v3 自动创建 pending_marks 表', () => {
     const row = db
-      .prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_marks'",
-      )
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_marks'")
       .get();
     expect(row).toBeDefined();
 
     const versionRow = db
       .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
       .get() as { value: string };
-    expect(parseInt(versionRow.value, 10)).toBe(3);
+    expect(parseInt(versionRow.value, 10)).toBe(4);
   });
 
   it('[C1-2] insertPendingMarks 写入；ON CONFLICT 覆盖同 path 不同 hash', () => {
@@ -93,9 +96,9 @@ describe('pending_marks outbox (C1)', () => {
     insertPendingMarks(db, [{ path: 'a.ts', hash: 'hA2' }]);
     expect(countPendingMarks(db)).toBe(2);
 
-    const row = db
-      .prepare('SELECT hash FROM pending_marks WHERE path = ?')
-      .get('a.ts') as { hash: string };
+    const row = db.prepare('SELECT hash FROM pending_marks WHERE path = ?').get('a.ts') as {
+      hash: string;
+    };
     expect(row.hash).toBe('hA2');
   });
 
@@ -107,9 +110,7 @@ describe('pending_marks outbox (C1)', () => {
     deletePendingMarks(db, ['a.ts']);
     expect(countPendingMarks(db)).toBe(1);
 
-    const remaining = db
-      .prepare('SELECT path FROM pending_marks')
-      .all() as Array<{ path: string }>;
+    const remaining = db.prepare('SELECT path FROM pending_marks').all() as Array<{ path: string }>;
     expect(remaining.map((r) => r.path)).toEqual(['b.ts']);
   });
 
@@ -191,7 +192,30 @@ describe('pending_marks outbox (C1)', () => {
     expect(countPendingMarks(db)).toBe(0);
   });
 
-  it('[C1-10] v2 → v3 迁移：旧库有 schema_version=2 时升级建 pending_marks', () => {
+  it('[C1-10] vector_manifest 状态驱动 ready-only 查询', () => {
+    insertFile(db, 'ready.ts', 'h-ready', null);
+    insertFile(db, 'pending.ts', 'h-pending', null);
+    insertFile(db, 'failed.ts', 'h-failed', null);
+    insertFile(db, 'stale.ts', 'h-new', 'h-old');
+
+    upsertVectorManifestPending(db, [
+      { path: 'ready.ts', hash: 'h-ready', chunkCount: 2, embeddingDimensions: 1024 },
+      { path: 'pending.ts', hash: 'h-pending', chunkCount: 1, embeddingDimensions: 1024 },
+      { path: 'failed.ts', hash: 'h-failed', chunkCount: 1, embeddingDimensions: 1024 },
+      { path: 'stale.ts', hash: 'h-old', chunkCount: 1, embeddingDimensions: 1024 },
+    ]);
+    batchUpdateVectorIndexHash(db, [{ path: 'ready.ts', hash: 'h-ready' }]);
+    markVectorManifestFailed(db, [{ path: 'failed.ts', hash: 'h-failed', error: 'boom' }]);
+
+    expect(getVectorManifestCounts(db)).toEqual({ pending: 2, ready: 1, failed: 1 });
+    expect(
+      Array.from(
+        getReadyVectorFileHashes(db, ['ready.ts', 'pending.ts', 'failed.ts', 'stale.ts']).entries(),
+      ),
+    ).toEqual([['ready.ts', 'h-ready']]);
+  });
+
+  it('[C1-11] v2 → v3 迁移：旧库有 schema_version=2 时升级建 pending_marks', () => {
     const oldDb = new Database(':memory:');
     oldDb.exec(`
       CREATE TABLE files (
@@ -216,16 +240,14 @@ describe('pending_marks outbox (C1)', () => {
     migrateSchema(oldDb);
 
     const tableRow = oldDb
-      .prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_marks'",
-      )
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_marks'")
       .get();
     expect(tableRow).toBeDefined();
 
     const versionRow = oldDb
       .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
       .get() as { value: string };
-    expect(parseInt(versionRow.value, 10)).toBe(3);
+    expect(parseInt(versionRow.value, 10)).toBe(4);
 
     oldDb.close();
   });

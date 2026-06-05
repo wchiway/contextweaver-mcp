@@ -4,8 +4,8 @@
  * 验证 1.1 修复：files_fts 从独立内容表迁移到外部内容表
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrateSchema } from '../../src/db/index.js';
 import { initFilesFts, searchFilesFts } from '../../src/search/fts.js';
 
@@ -36,7 +36,7 @@ function createV1Schema(db: Database.Database): void {
 function insertFile(db: Database.Database, path: string, content: string): void {
   db.prepare(
     'INSERT INTO files (path, hash, mtime, size, content, language) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(path, 'h-' + path, 0, content.length, content, 'typescript');
+  ).run(path, `h-${path}`, 0, content.length, content, 'typescript');
 }
 
 function getFtsSchema(db: Database.Database): string {
@@ -47,9 +47,9 @@ function getFtsSchema(db: Database.Database): string {
 }
 
 function getSchemaVersion(db: Database.Database): number | null {
-  const row = db
-    .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
-    .get() as { value: string } | undefined;
+  const row = db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as
+    | { value: string }
+    | undefined;
   if (!row) return null;
   return parseInt(row.value, 10);
 }
@@ -70,7 +70,7 @@ describe('Schema 迁移 v1 → v2', () => {
     insertFile(db, 'a.ts', 'function hello() { return "world"; }');
     insertFile(db, 'b.ts', 'class Foo { bar() {} }');
     // 旧 schema 下用旧方式同步 FTS
-    db.exec(`INSERT INTO files_fts(path, content) SELECT path, content FROM files`);
+    db.exec('INSERT INTO files_fts(path, content) SELECT path, content FROM files');
 
     // 执行迁移
     migrateSchema(db);
@@ -79,7 +79,7 @@ describe('Schema 迁移 v1 → v2', () => {
     initFilesFts(db);
 
     // 验证 schema 已升级
-    expect(getSchemaVersion(db)).toBe(3);
+    expect(getSchemaVersion(db)).toBe(4);
     expect(getFtsSchema(db)).toContain("content='files'");
 
     // 验证数据可搜索
@@ -102,7 +102,7 @@ describe('Schema 迁移 v1 → v2', () => {
   it('[M3] 迁移后 DELETE files → 触发器自动从 files_fts 删除', () => {
     createV1Schema(db);
     insertFile(db, 'delete_me.ts', 'targetSymbol');
-    db.exec(`INSERT INTO files_fts(path, content) SELECT path, content FROM files`);
+    db.exec('INSERT INTO files_fts(path, content) SELECT path, content FROM files');
 
     migrateSchema(db);
     initFilesFts(db);
@@ -122,17 +122,14 @@ describe('Schema 迁移 v1 → v2', () => {
   it('[M4] 迁移后 UPDATE files.content → 触发器同步新内容', () => {
     createV1Schema(db);
     insertFile(db, 'update.ts', 'oldTokenABCXYZ');
-    db.exec(`INSERT INTO files_fts(path, content) SELECT path, content FROM files`);
+    db.exec('INSERT INTO files_fts(path, content) SELECT path, content FROM files');
 
     migrateSchema(db);
     initFilesFts(db);
 
     expect(searchFilesFts(db, 'oldTokenABCXYZ', 10)).toHaveLength(1);
 
-    db.prepare('UPDATE files SET content = ? WHERE path = ?').run(
-      'newTokenDEFUVW',
-      'update.ts',
-    );
+    db.prepare('UPDATE files SET content = ? WHERE path = ?').run('newTokenDEFUVW', 'update.ts');
 
     expect(searchFilesFts(db, 'oldTokenABCXYZ', 10)).toHaveLength(0);
     expect(searchFilesFts(db, 'newTokenDEFUVW', 10)).toHaveLength(1);
@@ -187,13 +184,13 @@ describe('Schema 迁移 v1 → v2', () => {
     `);
 
     migrateSchema(db);
-    expect(getSchemaVersion(db)).toBe(3);
+    expect(getSchemaVersion(db)).toBe(4);
   });
 
   it('[M7] 重复 migrateSchema 调用幂等', () => {
     createV1Schema(db);
     insertFile(db, 'a.ts', 'content');
-    db.exec(`INSERT INTO files_fts(path, content) SELECT path, content FROM files`);
+    db.exec('INSERT INTO files_fts(path, content) SELECT path, content FROM files');
 
     migrateSchema(db);
     initFilesFts(db);
@@ -201,7 +198,7 @@ describe('Schema 迁移 v1 → v2', () => {
     migrateSchema(db);
     initFilesFts(db);
 
-    expect(getSchemaVersion(db)).toBe(3);
+    expect(getSchemaVersion(db)).toBe(4);
     expect(getFtsSchema(db)).toContain("content='files'");
   });
 
@@ -226,17 +223,12 @@ describe('Schema 迁移 v1 → v2', () => {
       CREATE VIRTUAL TABLE files_fts_v1_backup USING fts5(path, content);
     `);
     // 标记已迁移
-    db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)').run(
-      'schema_version',
-      '2',
-    );
+    db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)').run('schema_version', '2');
 
     migrateSchema(db);
 
     const backupExists = db
-      .prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts_v1_backup'`,
-      )
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts_v1_backup'`)
       .get();
     expect(backupExists).toBeUndefined();
   });

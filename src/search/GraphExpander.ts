@@ -9,7 +9,7 @@
 
 import type Database from 'better-sqlite3';
 import { getEmbeddingConfig } from '../config.js';
-import { initDb } from '../db/index.js';
+import { getReadyVectorFileHashes, initDb } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { type ChunkRecord, getVectorStore, type VectorStore } from '../vectorStore/index.js';
 import { ChunkContentLoader } from './ChunkContentLoader.js';
@@ -177,10 +177,11 @@ export class GraphExpander {
     const allFilePaths = Array.from(seedsByFile.keys());
     const allChunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
     if (!allChunksMap) return result;
+    const readyChunksMap = this.filterReadyChunksByFile(allFilePaths, allChunksMap);
 
     for (const [filePath, fileSeeds] of seedsByFile) {
-      // 从批量结果中获取该文件的 chunks
-      const allChunks = allChunksMap.get(filePath) ?? [];
+      // 从批量结果中获取该文件的 ready chunks
+      const allChunks = readyChunksMap.get(filePath) ?? [];
       if (allChunks.length === 0) continue;
 
       // 按 chunk_index 排序
@@ -275,13 +276,15 @@ export class GraphExpander {
     for (const prefixSeeds of prefixGroups.values()) {
       uniqueFilePaths.add(prefixSeeds[0].filePath);
     }
-    const allChunksMap = await this.vectorStore?.getFilesChunks(Array.from(uniqueFilePaths));
+    const uniqueFilePathList = Array.from(uniqueFilePaths);
+    const allChunksMap = await this.vectorStore?.getFilesChunks(uniqueFilePathList);
     if (!allChunksMap) return result;
+    const readyChunksMap = this.filterReadyChunksByFile(uniqueFilePathList, allChunksMap);
 
     // 对于每个前缀，查找同前缀的其他 chunks
     for (const [prefix, prefixSeeds] of prefixGroups) {
       const filePath = prefixSeeds[0].filePath;
-      const allChunks = allChunksMap.get(filePath) ?? [];
+      const allChunks = readyChunksMap.get(filePath) ?? [];
 
       // 性能优化：预计算所有 chunk 的 breadcrumb 前缀，避免在过滤中重复调用
       const chunkPrefixCache = new Map<number, string | null>();
@@ -419,15 +422,17 @@ export class GraphExpander {
 
     // Phase 2: 批量获取所有 import 目标文件的 chunks（N 次查询 → 1 次）
     if (allTargetPaths.size === 0) return result;
-    const importChunksMap = await this.vectorStore?.getFilesChunks(Array.from(allTargetPaths));
+    const targetPathList = Array.from(allTargetPaths);
+    const importChunksMap = await this.vectorStore?.getFilesChunks(targetPathList);
     if (!importChunksMap) return result;
+    const readyImportChunksMap = this.filterReadyChunksByFile(targetPathList, importChunksMap);
 
     // M3: 共享 ChunkContentLoader，一次性按所有 import target 的 chunks 预加载
     // 之前每个 import target 调 selectImportChunks 会创建新 loader，丢失跨文件批量优势
     const sharedLoader = new ChunkContentLoader(this.db as Database.Database);
     const allSlices: Array<{ filePath: string; start_index: number; end_index: number }> = [];
     if (queryTokens && queryTokens.size > 0) {
-      for (const chunks of importChunksMap.values()) {
+      for (const chunks of readyImportChunksMap.values()) {
         for (const c of chunks) {
           allSlices.push({
             filePath: c.file_path,
@@ -443,7 +448,7 @@ export class GraphExpander {
     const bestByKey = new Map<string, ScoredChunk>();
 
     for (const { targetPath, depth, seedScore } of resolvedImports) {
-      const importChunks = importChunksMap.get(targetPath);
+      const importChunks = readyImportChunksMap.get(targetPath);
       if (!importChunks || importChunks.length === 0) continue;
 
       const selectedChunks = this.selectImportChunks(
@@ -522,13 +527,15 @@ export class GraphExpander {
 
     if (topPaths.length === 0) return [];
 
-    const chunksMap = await this.vectorStore?.getFilesChunks(topPaths.map(([path]) => path));
+    const reverseImportPaths = topPaths.map(([path]) => path);
+    const chunksMap = await this.vectorStore?.getFilesChunks(reverseImportPaths);
     if (!chunksMap) return [];
+    const readyChunksMap = this.filterReadyChunksByFile(reverseImportPaths, chunksMap);
 
     const result: ScoredChunk[] = [];
     for (const [path, score] of topPaths) {
       const chunks = this.selectImportChunks(
-        chunksMap.get(path) ?? [],
+        readyChunksMap.get(path) ?? [],
         chunksPerImportFile,
         queryTokens,
       );
@@ -581,11 +588,12 @@ export class GraphExpander {
     const paths = Array.from(new Set(hits.map((hit) => hit.filePath)));
     const chunksMap = await this.vectorStore?.getFilesChunks(paths);
     if (!chunksMap) return [];
+    const readyChunksMap = this.filterReadyChunksByFile(paths, chunksMap);
 
     const result: ScoredChunk[] = [];
     const seedScore = Math.max(...seeds.map((seed) => seed.score));
     for (const hit of hits) {
-      const chunk = (chunksMap.get(hit.filePath) ?? []).find(
+      const chunk = (readyChunksMap.get(hit.filePath) ?? []).find(
         (item) => item.chunk_index === hit.chunkIndex,
       );
       if (!chunk) continue;
@@ -616,6 +624,25 @@ export class GraphExpander {
    */
   private getChunkKey(chunk: ScoredChunk): string {
     return `${chunk.filePath}#${chunk.chunkIndex}`;
+  }
+
+  private filterReadyChunksByFile(
+    filePaths: string[],
+    chunksMap: Map<string, ChunkRecord[]>,
+  ): Map<string, ChunkRecord[]> {
+    const readyHashes = getReadyVectorFileHashes(this.db as Database.Database, filePaths);
+    const result = new Map<string, ChunkRecord[]>();
+
+    for (const filePath of filePaths) {
+      const readyHash = readyHashes.get(filePath);
+      if (!readyHash) continue;
+      const chunks = (chunksMap.get(filePath) ?? []).filter(
+        (chunk) => chunk.file_hash === readyHash,
+      );
+      if (chunks.length > 0) result.set(filePath, chunks);
+    }
+
+    return result;
   }
 
   /**

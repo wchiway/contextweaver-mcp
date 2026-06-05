@@ -1,10 +1,10 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG } from '../../src/search/config.js';
+import { batchUpsertChunkFts, initChunksFts } from '../../src/search/fts.js';
 import { GraphExpander } from '../../src/search/GraphExpander.js';
 import type { ScoredChunk } from '../../src/search/types.js';
 import type { ChunkRecord } from '../../src/vectorStore/index.js';
-import { initChunksFts, batchUpsertChunkFts } from '../../src/search/fts.js';
 
 function makeChunkRecord(
   filePath: string,
@@ -30,7 +30,12 @@ function makeChunkRecord(
   };
 }
 
-function makeSeed(filePath: string, chunkIndex: number, score: number, breadcrumb: string): ScoredChunk {
+function makeSeed(
+  filePath: string,
+  chunkIndex: number,
+  score: number,
+  breadcrumb: string,
+): ScoredChunk {
   return {
     filePath,
     chunkIndex,
@@ -53,13 +58,29 @@ describe('GraphExpander call sites', () => {
     db.exec(`
       CREATE TABLE files (
         path TEXT PRIMARY KEY,
-        content TEXT
+        hash TEXT NOT NULL,
+        content TEXT,
+        vector_index_hash TEXT
+      );
+      CREATE TABLE vector_manifest (
+        path TEXT PRIMARY KEY,
+        hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL DEFAULT 0,
+        embedding_dimensions INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        updated_at INTEGER NOT NULL
       )
     `);
     initChunksFts(db);
 
     const callerContent = 'export function run() {\n  return doSearch();\n}\n';
-    db.prepare('INSERT INTO files (path, content) VALUES (?, ?)').run('src/caller.ts', callerContent);
+    db.prepare(
+      'INSERT INTO files (path, hash, content, vector_index_hash) VALUES (?, ?, ?, ?)',
+    ).run('src/caller.ts', 'hash', callerContent, 'hash');
+    db.prepare(
+      'INSERT INTO vector_manifest (path, hash, status, chunk_count, embedding_dimensions, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run('src/caller.ts', 'hash', 'ready', 1, 2, Date.now());
     batchUpsertChunkFts(db, [
       {
         chunkId: 'src/caller.ts#hash#0',
@@ -85,10 +106,14 @@ describe('GraphExpander call sites', () => {
       callsiteChunksPerSeed: 2,
       decayReverseImport: 0.5,
       decayCallsite: 0.5,
-    } as any);
+    });
 
-    (expander as any).db = db;
-    (expander as any).vectorStore = vectorStore;
+    const testExpander = expander as unknown as {
+      db: Database.Database;
+      vectorStore: typeof vectorStore;
+    };
+    testExpander.db = db;
+    testExpander.vectorStore = vectorStore;
 
     const result = await expander.expand([
       makeSeed('src/search.ts', 0, 0.9, 'src/search.ts > function doSearch'),

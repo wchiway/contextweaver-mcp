@@ -22,6 +22,21 @@ export interface FileMeta {
   vectorIndexHash: string | null;
 }
 
+export type VectorManifestStatus = 'pending' | 'ready' | 'failed';
+
+export interface VectorManifestItem {
+  path: string;
+  hash: string;
+  chunkCount: number;
+  embeddingDimensions: number;
+}
+
+export interface VectorManifestCounts {
+  pending: number;
+  ready: number;
+  failed: number;
+}
+
 /**
  * 获取目录的创建时间（birthtime）
  * 优先使用 .git 目录的创建时间，否则使用根目录的创建时间
@@ -135,7 +150,7 @@ export function initDb(projectId: string): Database.Database {
 // Schema 迁移
 // ===========================================
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 const METADATA_KEY_SCHEMA_VERSION = 'schema_version';
 
 /**
@@ -184,7 +199,6 @@ function isOldFilesFtsSchema(db: Database.Database): boolean {
  * 保证迁移在 FTS 重建之前完成。
  */
 export function migrateSchema(db: Database.Database): void {
-  // 残留备份表清理（上次迁移失败后再次启动时）
   const backupExists = db
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts_v1_backup'`)
     .get();
@@ -198,8 +212,6 @@ export function migrateSchema(db: Database.Database): void {
 
   const current = getSchemaVersion(db);
 
-  // 全新数据库：直接写入当前版本，无需迁移
-  // 判断标准：files 表为空 且 无 files_fts
   if (current === null) {
     const fileCount = (db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }).c;
     const ftsExists = db
@@ -207,23 +219,26 @@ export function migrateSchema(db: Database.Database): void {
       .get();
 
     if (fileCount === 0 && !ftsExists) {
-      // 全新库也要创建 v3 的 pending_marks 表
       migrateToV3(db);
+      migrateToV4(db);
       setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
       return;
     }
   }
 
-  // v1 → v2：files_fts 重建为外部内容表
   if ((current ?? 1) < 2) {
     migrateToV2(db);
     setSchemaVersion(db, 2);
   }
 
-  // v2 → v3：pending_marks outbox 表
   if ((current ?? 2) < 3) {
     migrateToV3(db);
     setSchemaVersion(db, 3);
+  }
+
+  if ((current ?? 3) < 4) {
+    migrateToV4(db);
+    setSchemaVersion(db, 4);
   }
 }
 
@@ -317,6 +332,46 @@ function migrateToV3(db: Database.Database): void {
   logger.info('schema 迁移 v2 → v3 完成: pending_marks 表已创建');
 }
 
+function migrateToV4(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vector_manifest (
+      path TEXT PRIMARY KEY,
+      hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'ready', 'failed')),
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      embedding_dimensions INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_vector_manifest_status ON vector_manifest(status);
+    CREATE INDEX IF NOT EXISTS idx_vector_manifest_hash ON vector_manifest(hash);
+  `);
+
+  const now = Date.now();
+  db.prepare(`
+    INSERT OR IGNORE INTO vector_manifest (
+      path,
+      hash,
+      status,
+      chunk_count,
+      embedding_dimensions,
+      error_message,
+      updated_at
+    )
+    SELECT
+      path,
+      hash,
+      CASE WHEN vector_index_hash = hash THEN 'ready' ELSE 'pending' END,
+      0,
+      0,
+      NULL,
+      ?
+    FROM files
+  `).run(now);
+
+  logger.info('schema 迁移 v3 → v4 完成: vector_manifest 表已创建');
+}
+
 /**
  * 插入 outbox 标记（在 FTS 写入成功的同一 SQLite 事务中调用）
  */
@@ -375,18 +430,24 @@ export function replayPendingMarks(db: Database.Database): {
     UPDATE files SET vector_index_hash = ?
     WHERE path = ? AND hash = ?
   `);
+  const markReady = db.prepare(`
+    UPDATE vector_manifest
+    SET status = 'ready', error_message = NULL, updated_at = ?
+    WHERE path = ? AND hash = ?
+  `);
   const del = db.prepare('DELETE FROM pending_marks WHERE path = ?');
 
   let applied = 0;
   let discarded = 0;
+  const now = Date.now();
 
   const tx = db.transaction(() => {
     for (const r of rows) {
       const info = update.run(r.hash, r.path, r.hash);
       if (info.changes > 0) {
+        markReady.run(now, r.path, r.hash);
         applied++;
       } else {
-        // files.hash 已变更（或 path 已删除）→ outbox 标记过时，丢弃
         discarded++;
       }
       del.run(r.path);
@@ -398,6 +459,124 @@ export function replayPendingMarks(db: Database.Database): {
     logger.info({ applied, discarded }, 'pending_marks 重放完成');
   }
   return { applied, discarded };
+}
+
+export function upsertVectorManifestPending(
+  db: Database.Database,
+  items: VectorManifestItem[],
+): void {
+  if (items.length === 0) return;
+  const now = Date.now();
+  const upsert = db.prepare(`
+    INSERT INTO vector_manifest (
+      path,
+      hash,
+      status,
+      chunk_count,
+      embedding_dimensions,
+      error_message,
+      updated_at
+    )
+    VALUES (?, ?, 'pending', ?, ?, NULL, ?)
+    ON CONFLICT(path) DO UPDATE SET
+      hash = excluded.hash,
+      status = 'pending',
+      chunk_count = excluded.chunk_count,
+      embedding_dimensions = excluded.embedding_dimensions,
+      error_message = NULL,
+      updated_at = excluded.updated_at
+  `);
+  const tx = db.transaction((data: VectorManifestItem[]) => {
+    for (const item of data) {
+      upsert.run(item.path, item.hash, item.chunkCount, item.embeddingDimensions, now);
+    }
+  });
+  tx(items);
+}
+
+export function markVectorManifestReady(
+  db: Database.Database,
+  items: Array<{ path: string; hash: string }>,
+): void {
+  if (items.length === 0) return;
+  const now = Date.now();
+  const update = db.prepare(`
+    UPDATE vector_manifest
+    SET status = 'ready', error_message = NULL, updated_at = ?
+    WHERE path = ? AND hash = ?
+  `);
+  const tx = db.transaction((data: Array<{ path: string; hash: string }>) => {
+    for (const item of data) {
+      update.run(now, item.path, item.hash);
+    }
+  });
+  tx(items);
+}
+
+export function markVectorManifestFailed(
+  db: Database.Database,
+  items: Array<{ path: string; hash: string; error?: string }>,
+): void {
+  if (items.length === 0) return;
+  const now = Date.now();
+  const update = db.prepare(`
+    UPDATE vector_manifest
+    SET status = 'failed', error_message = ?, updated_at = ?
+    WHERE path = ? AND hash = ?
+  `);
+  const tx = db.transaction((data: Array<{ path: string; hash: string; error?: string }>) => {
+    for (const item of data) {
+      update.run(item.error ?? null, now, item.path, item.hash);
+    }
+  });
+  tx(items);
+}
+
+export function deleteVectorManifest(db: Database.Database, paths: string[]): void {
+  if (paths.length === 0) return;
+  const del = db.prepare('DELETE FROM vector_manifest WHERE path = ?');
+  const tx = db.transaction((items: string[]) => {
+    for (const path of items) del.run(path);
+  });
+  tx(paths);
+}
+
+export function getReadyVectorFileHashes(
+  db: Database.Database,
+  paths: string[],
+): Map<string, string> {
+  const result = new Map<string, string>();
+  if (paths.length === 0) return result;
+
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < paths.length; i += BATCH_SIZE) {
+    const batch = paths.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = db
+      .prepare(`
+        SELECT f.path, f.hash
+        FROM files f
+        JOIN vector_manifest vm ON vm.path = f.path
+        WHERE f.path IN (${placeholders})
+          AND f.vector_index_hash = f.hash
+          AND vm.hash = f.hash
+          AND vm.status = 'ready'
+      `)
+      .all(...batch) as Array<{ path: string; hash: string }>;
+
+    for (const row of rows) result.set(row.path, row.hash);
+  }
+
+  return result;
+}
+
+export function getVectorManifestCounts(db: Database.Database): VectorManifestCounts {
+  const rows = db
+    .prepare('SELECT status, COUNT(*) as count FROM vector_manifest GROUP BY status')
+    .all() as Array<{ status: VectorManifestStatus; count: number }>;
+  const counts: VectorManifestCounts = { pending: 0, ready: 0, failed: 0 };
+  for (const row of rows) counts[row.status] = row.count;
+  return counts;
 }
 
 /**
@@ -449,7 +628,16 @@ export function getAllFileMeta(
  */
 export function getFilesNeedingVectorIndex(db: Database.Database): string[] {
   const rows = db
-    .prepare('SELECT path FROM files WHERE vector_index_hash IS NULL OR vector_index_hash != hash')
+    .prepare(`
+      SELECT f.path
+      FROM files f
+      LEFT JOIN vector_manifest vm ON vm.path = f.path
+      WHERE f.vector_index_hash IS NULL
+        OR f.vector_index_hash != f.hash
+        OR vm.path IS NULL
+        OR vm.hash != f.hash
+        OR vm.status != 'ready'
+    `)
     .all() as Array<{ path: string }>;
   return rows.map((r) => r.path);
 }
@@ -462,11 +650,39 @@ export function batchUpdateVectorIndexHash(
   db: Database.Database,
   items: Array<{ path: string; hash: string }>,
 ): void {
-  const update = db.prepare('UPDATE files SET vector_index_hash = ? WHERE path = ?');
+  if (items.length === 0) return;
+  const now = Date.now();
+  const updateFile = db.prepare('UPDATE files SET vector_index_hash = ? WHERE path = ?');
+  const upsertManifest = db.prepare(`
+    INSERT INTO vector_manifest (
+      path,
+      hash,
+      status,
+      chunk_count,
+      embedding_dimensions,
+      error_message,
+      updated_at
+    )
+    VALUES (?, ?, 'ready', 0, 0, NULL, ?)
+    ON CONFLICT(path) DO UPDATE SET
+      hash = excluded.hash,
+      status = 'ready',
+      chunk_count = CASE
+        WHEN vector_manifest.hash = excluded.hash THEN vector_manifest.chunk_count
+        ELSE excluded.chunk_count
+      END,
+      embedding_dimensions = CASE
+        WHEN vector_manifest.hash = excluded.hash THEN vector_manifest.embedding_dimensions
+        ELSE excluded.embedding_dimensions
+      END,
+      error_message = NULL,
+      updated_at = excluded.updated_at
+  `);
 
   const transaction = db.transaction((data: Array<{ path: string; hash: string }>) => {
     for (const item of data) {
-      update.run(item.hash, item.path);
+      updateFile.run(item.hash, item.path);
+      upsertManifest.run(item.path, item.hash, now);
     }
   });
 
@@ -477,11 +693,19 @@ export function batchUpdateVectorIndexHash(
  * 清除文件的 vector_index_hash（用于标记需要重新索引）
  */
 export function clearVectorIndexHash(db: Database.Database, paths: string[]): void {
-  const update = db.prepare('UPDATE files SET vector_index_hash = NULL WHERE path = ?');
+  if (paths.length === 0) return;
+  const now = Date.now();
+  const clearFile = db.prepare('UPDATE files SET vector_index_hash = NULL WHERE path = ?');
+  const markPending = db.prepare(`
+    UPDATE vector_manifest
+    SET status = 'pending', error_message = NULL, updated_at = ?
+    WHERE path = ?
+  `);
 
   const transaction = db.transaction((items: string[]) => {
     for (const item of items) {
-      update.run(item);
+      clearFile.run(item);
+      markPending.run(now, item);
     }
   });
 
@@ -544,11 +768,14 @@ export function getAllPaths(db: Database.Database): string[] {
  * 批量删除文件
  */
 export function batchDelete(db: Database.Database, paths: string[]): void {
-  const stmt = db.prepare('DELETE FROM files WHERE path = ?');
+  if (paths.length === 0) return;
+  const deleteFile = db.prepare('DELETE FROM files WHERE path = ?');
+  const deleteManifest = db.prepare('DELETE FROM vector_manifest WHERE path = ?');
 
   const transaction = db.transaction((items: string[]) => {
     for (const item of items) {
-      stmt.run(item);
+      deleteManifest.run(item);
+      deleteFile.run(item);
     }
   });
 
@@ -763,8 +990,15 @@ export function setLanceDbMigrationState(
  * 让自愈机制（getFilesNeedingVectorIndex）在下次 scan 时重建。
  */
 export function clearAllVectorIndexHash(db: Database.Database): number {
-  const info = db.prepare('UPDATE files SET vector_index_hash = NULL').run();
-  return info.changes;
+  const tx = db.transaction(() => {
+    const info = db.prepare('UPDATE files SET vector_index_hash = NULL').run();
+    db.prepare(`
+      UPDATE vector_manifest
+      SET status = 'pending', error_message = NULL, updated_at = ?
+    `).run(Date.now());
+    return info.changes;
+  });
+  return tx() as number;
 }
 
 /**

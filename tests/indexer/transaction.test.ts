@@ -8,9 +8,13 @@
  * 而非端到端调用 batchIndex（端到端集成测试见 scanner 层）。
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { batchUpdateVectorIndexHash, clearVectorIndexHash } from '../../src/db/index.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  batchUpdateVectorIndexHash,
+  clearVectorIndexHash,
+  migrateSchema,
+} from '../../src/db/index.js';
 import { batchUpsertChunkFts, initChunksFts } from '../../src/search/fts.js';
 import type { ChunkRecord } from '../../src/vectorStore/index.js';
 
@@ -65,7 +69,7 @@ async function runPseudoTransaction(
   // 阶段 4: LanceDB
   try {
     await store.batchUpsertFiles(filesToUpsert);
-  } catch (err) {
+  } catch (_err) {
     clearVectorIndexHash(
       db,
       filesToUpsert.map((f) => f.path),
@@ -77,12 +81,10 @@ async function runPseudoTransaction(
   try {
     if (ftsShouldFail) throw new Error('Mock: FTS failed');
     batchUpsertChunkFts(db, ftsChunks);
-  } catch (err) {
+  } catch (_err) {
     // 补偿
     try {
-      await store.deleteFilesByHash(
-        filesToUpsert.map((f) => ({ path: f.path, hash: f.hash })),
-      );
+      await store.deleteFilesByHash(filesToUpsert.map((f) => ({ path: f.path, hash: f.hash })));
     } catch {
       // 二级失败，孤儿留给 GC
     }
@@ -112,8 +114,13 @@ describe('Indexer 事务补偿', () => {
         content TEXT,
         language TEXT NOT NULL,
         vector_index_hash TEXT
+      );
+      CREATE TABLE metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       )
     `);
+    migrateSchema(db);
     initChunksFts(db);
 
     // 种子数据：file_a 已有旧 hash 'old-hash'
