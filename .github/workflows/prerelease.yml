@@ -9,42 +9,28 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Prerelease version to publish (e.g., 1.5.3-alpha.0) (must have tag v1.5.3-alpha.0)"
+        description: "Prerelease version (e.g., 1.5.3-alpha.0) (must have tag v1.5.3-alpha.0)"
         required: true
-        type: string
-      npm_tag:
-        description: "NPM dist-tag to publish under"
-        required: false
-        default: "next"
         type: string
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
-  build-and-publish-prerelease:
-    name: Build and Publish Prerelease
+  create-prerelease:
+    name: Create GitHub Prerelease
     if: ${{ (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && contains(github.ref_name, '-')) }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code (tag on dispatch)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
-
-      - name: Resolve prerelease version
+      - name: Resolve prerelease tag
         id: rel
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             INPUT="${{ github.event.inputs.version }}"
             VER="${INPUT#v}"
-            NPM_TAG="${{ github.event.inputs.npm_tag }}"
           else
             VER="${GITHUB_REF_NAME#v}"
-            NPM_TAG="next"
           fi
 
           case "$VER" in
@@ -56,55 +42,6 @@ jobs:
           esac
 
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
-          echo "ver=$VER" >> "$GITHUB_OUTPUT"
-          echo "npm_tag=${NPM_TAG:-next}" >> "$GITHUB_OUTPUT"
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-          cache: "pnpm"
-
-      - name: Upgrade npm for Trusted Publishing (OIDC)
-        run: |
-          npm i -g npm@^11.5.1
-          npm -v
-          node -v
-          pnpm -v
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm run build:release
-
-      - name: Verify tag matches package.json version
-        run: |
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "${{ steps.rel.outputs.ver }}" != "$PKG" ]; then
-            echo "Version mismatch: tag v${{ steps.rel.outputs.ver }} != package.json $PKG"
-            exit 1
-          fi
-
-      - name: Check if version already exists on npm (dispatch only)
-        if: github.event_name == 'workflow_dispatch'
-        id: npmcheck
-        run: |
-          if npm view @chiway/contextweaver@${{ steps.rel.outputs.ver }} version >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish prerelease to NPM
-        if: github.event_name != 'workflow_dispatch' || steps.npmcheck.outputs.exists != 'true'
-        run: npm publish --no-git-checks --access public --provenance --tag ${{ steps.rel.outputs.npm_tag }}
 
       - name: Create GitHub Prerelease
         uses: softprops/action-gh-release@v2
@@ -116,9 +53,4 @@ jobs:
           body: |
             ## ContextWeaver ${{ steps.rel.outputs.tag }} prerelease
 
-            ### Installation
-            ```bash
-            npm install -g @chiway/contextweaver@${{ steps.rel.outputs.npm_tag }}
-            # or
-            pnpm add -g @chiway/contextweaver@${{ steps.rel.outputs.npm_tag }}
-            ```
+            This prerelease is for GitHub release testing only and does not publish to npm.
