@@ -18,7 +18,11 @@ const state = vi.hoisted(() => {
     batchUpsert: vi.fn(),
     batchUpdateMtime: vi.fn(),
     batchDelete: vi.fn(),
+    replaceSemanticSymbols: vi.fn(),
+    replaceSemanticEdges: vi.fn(),
     incrementIndexVersion: vi.fn().mockReturnValue(1),
+    incrementStat: vi.fn(),
+    setStatJson: vi.fn(),
     setStoredEmbeddingDimensions: vi.fn(),
     invalidateAllExpanderCaches: vi.fn(),
     closeAllIndexers: vi.fn(),
@@ -46,9 +50,13 @@ vi.mock('../../src/db/index.js', () => ({
   batchUpsert: (...args: unknown[]) => state.batchUpsert(...args),
   batchUpdateMtime: (...args: unknown[]) => state.batchUpdateMtime(...args),
   batchDelete: (...args: unknown[]) => state.batchDelete(...args),
+  replaceSemanticSymbols: (...args: unknown[]) => state.replaceSemanticSymbols(...args),
+  replaceSemanticEdges: (...args: unknown[]) => state.replaceSemanticEdges(...args),
   clear: vi.fn(),
   closeDb: vi.fn(),
   incrementIndexVersion: (...args: unknown[]) => state.incrementIndexVersion(...args),
+  incrementStat: (...args: unknown[]) => state.incrementStat(...args),
+  setStatJson: (...args: unknown[]) => state.setStatJson(...args),
 }));
 
 vi.mock('../../src/scanner/crawler.js', () => ({
@@ -90,8 +98,12 @@ describe('scan index_version invalidation', () => {
     state.batchUpsert.mockReset();
     state.batchUpdateMtime.mockReset();
     state.batchDelete.mockReset();
+    state.replaceSemanticSymbols.mockReset();
+    state.replaceSemanticEdges.mockReset();
     state.incrementIndexVersion.mockReset();
     state.incrementIndexVersion.mockReturnValue(1);
+    state.incrementStat.mockReset();
+    state.setStatJson.mockReset();
     state.setStoredEmbeddingDimensions.mockReset();
     state.invalidateAllExpanderCaches.mockReset();
     state.closeAllIndexers.mockReset();

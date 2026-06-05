@@ -79,7 +79,7 @@ describe('Schema 迁移 v1 → v2', () => {
     initFilesFts(db);
 
     // 验证 schema 已升级
-    expect(getSchemaVersion(db)).toBe(4);
+    expect(getSchemaVersion(db)).toBe(5);
     expect(getFtsSchema(db)).toContain("content='files'");
 
     // 验证数据可搜索
@@ -184,7 +184,7 @@ describe('Schema 迁移 v1 → v2', () => {
     `);
 
     migrateSchema(db);
-    expect(getSchemaVersion(db)).toBe(4);
+    expect(getSchemaVersion(db)).toBe(5);
   });
 
   it('[M7] 重复 migrateSchema 调用幂等', () => {
@@ -198,7 +198,7 @@ describe('Schema 迁移 v1 → v2', () => {
     migrateSchema(db);
     initFilesFts(db);
 
-    expect(getSchemaVersion(db)).toBe(4);
+    expect(getSchemaVersion(db)).toBe(5);
     expect(getFtsSchema(db)).toContain("content='files'");
   });
 

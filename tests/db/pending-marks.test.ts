@@ -82,7 +82,7 @@ describe('pending_marks outbox (C1)', () => {
     const versionRow = db
       .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
       .get() as { value: string };
-    expect(parseInt(versionRow.value, 10)).toBe(4);
+    expect(parseInt(versionRow.value, 10)).toBe(5);
   });
 
   it('[C1-2] insertPendingMarks 写入；ON CONFLICT 覆盖同 path 不同 hash', () => {
@@ -247,7 +247,7 @@ describe('pending_marks outbox (C1)', () => {
     const versionRow = oldDb
       .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
       .get() as { value: string };
-    expect(parseInt(versionRow.value, 10)).toBe(4);
+    expect(parseInt(versionRow.value, 10)).toBe(5);
 
     oldDb.close();
   });

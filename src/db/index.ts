@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { initChunksFts, initFilesFts } from '../search/fts.js';
+import type { SemanticEdge, SemanticSymbol } from '../semantic/types.js';
 import { logger } from '../utils/logger.js';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
@@ -150,7 +151,7 @@ export function initDb(projectId: string): Database.Database {
 // Schema 迁移
 // ===========================================
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 const METADATA_KEY_SCHEMA_VERSION = 'schema_version';
 
 /**
@@ -221,6 +222,7 @@ export function migrateSchema(db: Database.Database): void {
     if (fileCount === 0 && !ftsExists) {
       migrateToV3(db);
       migrateToV4(db);
+      migrateToV5(db);
       setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
       return;
     }
@@ -239,6 +241,11 @@ export function migrateSchema(db: Database.Database): void {
   if ((current ?? 3) < 4) {
     migrateToV4(db);
     setSchemaVersion(db, 4);
+  }
+
+  if ((current ?? 4) < 5) {
+    migrateToV5(db);
+    setSchemaVersion(db, 5);
   }
 }
 
@@ -370,6 +377,46 @@ function migrateToV4(db: Database.Database): void {
   `).run(now);
 
   logger.info('schema 迁移 v3 → v4 完成: vector_manifest 表已创建');
+}
+
+function migrateToV5(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS semantic_symbols (
+      path TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      language TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      source TEXT NOT NULL CHECK(source IN ('tree-sitter', 'ctags', 'lsp')),
+      start_line INTEGER NOT NULL,
+      end_line INTEGER,
+      container_name TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (path, hash, source, kind, name, start_line)
+    );
+    CREATE INDEX IF NOT EXISTS idx_semantic_symbols_path ON semantic_symbols(path);
+    CREATE INDEX IF NOT EXISTS idx_semantic_symbols_name ON semantic_symbols(name);
+    CREATE INDEX IF NOT EXISTS idx_semantic_symbols_source ON semantic_symbols(source);
+
+    CREATE TABLE IF NOT EXISTS semantic_edges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_path TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      target_path TEXT NOT NULL,
+      target_hash TEXT,
+      kind TEXT NOT NULL CHECK(kind IN ('definition', 'reference', 'call')),
+      symbol_name TEXT NOT NULL,
+      source_line INTEGER NOT NULL,
+      target_line INTEGER,
+      provider TEXT NOT NULL CHECK(provider IN ('lsp')),
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_path, source_hash);
+    CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_path, target_hash);
+    CREATE INDEX IF NOT EXISTS idx_semantic_edges_symbol ON semantic_edges(symbol_name);
+  `);
+
+  logger.info('schema 迁移 v4 → v5 完成: semantic graph 表已创建');
 }
 
 /**
@@ -579,6 +626,110 @@ export function getVectorManifestCounts(db: Database.Database): VectorManifestCo
   return counts;
 }
 
+export function replaceSemanticSymbols(
+  db: Database.Database,
+  paths: string[],
+  symbols: SemanticSymbol[],
+): void {
+  if (paths.length === 0) return;
+  const now = Date.now();
+  const deleteByPath = db.prepare('DELETE FROM semantic_symbols WHERE path = ?');
+  const insert = db.prepare(`
+    INSERT OR REPLACE INTO semantic_symbols (
+      path,
+      hash,
+      language,
+      name,
+      kind,
+      source,
+      start_line,
+      end_line,
+      container_name,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const tx = db.transaction(() => {
+    for (const path of paths) deleteByPath.run(path);
+    for (const symbol of symbols) {
+      insert.run(
+        symbol.path,
+        symbol.hash,
+        symbol.language,
+        symbol.name,
+        symbol.kind,
+        symbol.source,
+        symbol.startLine,
+        symbol.endLine,
+        symbol.containerName ?? null,
+        now,
+      );
+    }
+  });
+  tx();
+}
+
+export function replaceSemanticEdges(
+  db: Database.Database,
+  sourcePaths: string[],
+  edges: SemanticEdge[],
+): void {
+  if (sourcePaths.length === 0) return;
+  const now = Date.now();
+  const deleteBySource = db.prepare('DELETE FROM semantic_edges WHERE source_path = ?');
+  const insert = db.prepare(`
+    INSERT INTO semantic_edges (
+      source_path,
+      source_hash,
+      target_path,
+      target_hash,
+      kind,
+      symbol_name,
+      source_line,
+      target_line,
+      provider,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const tx = db.transaction(() => {
+    for (const path of sourcePaths) deleteBySource.run(path);
+    for (const edge of edges) {
+      insert.run(
+        edge.sourcePath,
+        edge.sourceHash,
+        edge.targetPath,
+        edge.targetHash,
+        edge.kind,
+        edge.symbolName,
+        edge.sourceLine,
+        edge.targetLine,
+        edge.provider,
+        now,
+      );
+    }
+  });
+  tx();
+}
+
+export function deleteSemanticGraphForPaths(db: Database.Database, paths: string[]): void {
+  if (paths.length === 0) return;
+  const deleteSymbols = db.prepare('DELETE FROM semantic_symbols WHERE path = ?');
+  const deleteSourceEdges = db.prepare('DELETE FROM semantic_edges WHERE source_path = ?');
+  const deleteTargetEdges = db.prepare('DELETE FROM semantic_edges WHERE target_path = ?');
+
+  const tx = db.transaction(() => {
+    for (const path of paths) {
+      deleteSymbols.run(path);
+      deleteSourceEdges.run(path);
+      deleteTargetEdges.run(path);
+    }
+  });
+  tx();
+}
+
 /**
  * 获取 pending_marks 中的标记数（诊断用）
  */
@@ -771,10 +922,16 @@ export function batchDelete(db: Database.Database, paths: string[]): void {
   if (paths.length === 0) return;
   const deleteFile = db.prepare('DELETE FROM files WHERE path = ?');
   const deleteManifest = db.prepare('DELETE FROM vector_manifest WHERE path = ?');
+  const deleteSymbols = db.prepare('DELETE FROM semantic_symbols WHERE path = ?');
+  const deleteSourceEdges = db.prepare('DELETE FROM semantic_edges WHERE source_path = ?');
+  const deleteTargetEdges = db.prepare('DELETE FROM semantic_edges WHERE target_path = ?');
 
   const transaction = db.transaction((items: string[]) => {
     for (const item of items) {
       deleteManifest.run(item);
+      deleteSymbols.run(item);
+      deleteSourceEdges.run(item);
+      deleteTargetEdges.run(item);
       deleteFile.run(item);
     }
   });
@@ -791,6 +948,8 @@ export function clear(db: Database.Database): void {
   db.exec('DELETE FROM files');
   db.exec('DELETE FROM files_fts');
   db.exec('DELETE FROM chunks_fts');
+  db.exec('DELETE FROM semantic_symbols');
+  db.exec('DELETE FROM semantic_edges');
 }
 
 // ===========================================

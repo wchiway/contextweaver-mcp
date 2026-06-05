@@ -15,11 +15,13 @@ import {
   incrementIndexVersion,
   incrementStat,
   initDb,
+  replaceSemanticSymbols,
   setStatJson,
   setStoredEmbeddingDimensions,
 } from '../db/index.js';
 import { closeAllIndexers, getIndexer } from '../indexer/index.js';
 import { invalidateAllExpanderCaches } from '../search/GraphExpander.js';
+import { runOptionalLspEnrichment } from '../semantic/lsp.js';
 import { logger } from '../utils/logger.js';
 import { closeAllVectorStores } from '../vectorStore/index.js';
 import { crawl } from './crawler.js';
@@ -178,6 +180,23 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     batchUpsert(db, toAdd);
     batchUpdateMtime(db, toUpdateMtime);
     batchDelete(db, deletedPaths);
+
+    const changedResults = results.filter((r) => r.status === 'added' || r.status === 'modified');
+    replaceSemanticSymbols(
+      db,
+      changedResults.map((r) => r.relPath),
+      changedResults.flatMap((r) => r.semanticSymbols ?? []),
+    );
+
+    await runOptionalLspEnrichment({
+      rootPath,
+      db,
+      files: changedResults.map((r) => ({
+        path: r.relPath,
+        hash: r.hash,
+        language: r.language,
+      })),
+    });
 
     // 统计结果
     const stats: ScanStats = {
