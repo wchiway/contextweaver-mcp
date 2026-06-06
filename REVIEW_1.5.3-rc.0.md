@@ -1,8 +1,8 @@
 # ContextWeaver v1.5.3-rc.0 全面 Review 报告
 
-**Review 日期**: 2026-06-05  
-**目标版本**: v1.5.3-rc.0  
-**基准版本**: v1.5.2  
+**Review 日期**: 2026-06-05
+**目标版本**: v1.5.3-rc.0
+**基准版本**: v1.5.2
 **Review 范围**: 代码质量、架构设计、测试覆盖、CI/CD 集成
 
 ---
@@ -72,7 +72,7 @@ SqliteError: no such table: semantic_symbols
 
 **原因**: 测试 mock 配置问题，`initDb()` 返回的数据库实例没有 semantic_symbols 表
 
-**影响**: 
+**影响**:
 - 核心功能 get-symbol-definition 未经测试验证
 - CI/CD 可能失败（如果运行测试）
 - 无法保证功能正确性
@@ -158,7 +158,7 @@ class A { foo() {} }  # method
 interface A { foo(): void; }  # 同名不同 kind，但 start_line 相同
 ```
 
-**影响**: 
+**影响**:
 - `INSERT OR REPLACE` 会覆盖前一个符号
 - 符号丢失，查询结果不完整
 
@@ -269,7 +269,7 @@ params.push(`${filter}/%`, filter);
 
 **建议**:
 ```sql
-CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_edges_unique 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_edges_unique
 ON semantic_edges(source_path, source_hash, target_path, symbol_name, source_line);
 ```
 
@@ -526,12 +526,12 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wch
 
 ## 📞 联系与反馈
 
-**Reviewer**: Claude (Anthropic)  
-**Review 工具**: Code analysis + Test execution + Manual verification  
+**Reviewer**: Claude (Anthropic)
+**Review 工具**: Code analysis + Test execution + Manual verification
 **下一步**: 根据本报告修复问题，发布 v1.5.3-rc.1
 
 ---
 
-**Report Generated**: 2026-06-05 17:12 UTC  
-**ContextWeaver Version**: 1.5.3-rc.0  
+**Report Generated**: 2026-06-05 17:12 UTC
+**ContextWeaver Version**: 1.5.3-rc.0
 **Review Status**: ⚠️ Issues Found - Action Required

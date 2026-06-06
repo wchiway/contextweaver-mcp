@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FileMeta } from '../../src/db/index.js';
 import type { ProcessResult } from '../../src/scanner/processor.js';
 
@@ -42,7 +42,8 @@ vi.mock('../../src/config.js', () => ({
 vi.mock('../../src/db/index.js', () => ({
   generateProjectId: () => 'project-test',
   initDb: () => state.db,
-  getAllFileMeta: () => new Map<string, Pick<FileMeta, 'mtime' | 'hash' | 'size' | 'vectorIndexHash'>>(),
+  getAllFileMeta: () =>
+    new Map<string, Pick<FileMeta, 'mtime' | 'hash' | 'size' | 'vectorIndexHash'>>(),
   getAllPaths: () => state.indexedPaths,
   getFilesNeedingVectorIndex: () => state.filesNeedingVectorIndex,
   getStoredEmbeddingDimensions: () => state.storedDimensions,
@@ -69,6 +70,10 @@ vi.mock('../../src/scanner/filter.js', () => ({
 
 vi.mock('../../src/scanner/processor.js', () => ({
   processFiles: async () => state.processResults,
+}));
+
+vi.mock('../../src/semantic/callGraphBuilder.js', () => ({
+  buildAndStoreCallGraph: vi.fn(() => 0),
 }));
 
 vi.mock('../../src/indexer/index.js', () => ({

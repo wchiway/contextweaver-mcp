@@ -84,7 +84,6 @@ const CALL_CONFIGS: Record<string, CallNodeConfig> = {
 function extractCalleeName(
   node: SyntaxNode,
   config: CallNodeConfig,
-  sourceCode: string,
 ): { name: string; qualifier?: string } | null {
   // 获取 callee 节点（Java 特殊处理）
   let calleeNode: SyntaxNode | null = null;
@@ -149,13 +148,12 @@ export function extractCallSites(tree: Parser.Tree, language: string): CallSite[
   }
 
   const calls: CallSite[] = [];
-  const sourceCode = tree.rootNode.text; // 用于提取节点文本
 
   function traverse(node: SyntaxNode) {
     // 检查是否为调用表达式
     if (config.callTypes.includes(node.type)) {
-      const callee = extractCalleeName(node, config, sourceCode);
-      if (callee && callee.name) {
+      const callee = extractCalleeName(node, config);
+      if (callee?.name) {
         calls.push({
           calleeName: callee.name,
           line: node.startPosition.row + 1, // tree-sitter 行号从 0 开始

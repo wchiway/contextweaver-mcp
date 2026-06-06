@@ -200,17 +200,15 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     });
 
     // 构建调用图
-    const filesWithCalls = changedResults
-      .filter((r) => r.callSites && r.callSites.length > 0)
-      .map((r) => ({
-        path: r.relPath,
-        hash: r.hash,
-        callSites: r.callSites!,
-      }));
+    const filesForCallGraph = changedResults.map((r) => ({
+      path: r.relPath,
+      hash: r.hash,
+      callSites: r.callSites ?? [],
+    }));
 
-    if (filesWithCalls.length > 0) {
-      const edgeCount = buildAndStoreCallGraph(db, filesWithCalls);
-      logger.info({ edgeCount, fileCount: filesWithCalls.length }, '调用图已更新');
+    if (filesForCallGraph.length > 0) {
+      const edgeCount = buildAndStoreCallGraph(db, filesForCallGraph);
+      logger.info({ edgeCount, fileCount: filesForCallGraph.length }, '调用图已更新');
     }
 
     // 统计结果

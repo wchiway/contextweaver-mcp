@@ -314,7 +314,8 @@ Returns:
         },
         path_filter: {
           type: 'string',
-          description: 'Optional path filter (prefix or glob pattern, e.g., "src/search" or "**/*.ts")',
+          description:
+            'Optional path filter (prefix or glob pattern, e.g., "src/search" or "**/*.ts")',
         },
         kind_filter: {
           type: 'string',

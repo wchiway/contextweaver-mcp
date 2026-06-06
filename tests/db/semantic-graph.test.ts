@@ -9,6 +9,7 @@ import {
   replaceSemanticSymbols,
 } from '../../src/db/index.js';
 import { initChunksFts, initFilesFts } from '../../src/search/fts.js';
+import { buildAndStoreCallGraph } from '../../src/semantic/callGraphBuilder.js';
 
 function setupSchema(db: Database.Database): void {
   db.exec(`
@@ -50,9 +51,9 @@ describe('semantic graph metadata', () => {
     const edges = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='semantic_edges'")
       .get();
-    const version = db
-      .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
-      .get() as { value: string };
+    const version = db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as {
+      value: string;
+    };
 
     expect(symbols).toBeDefined();
     expect(edges).toBeDefined();
@@ -141,19 +142,23 @@ describe('semantic graph metadata', () => {
         },
       ],
     );
-    replaceSemanticEdges(db, ['c.ts'], [
-      {
-        sourcePath: 'c.ts',
-        sourceHash: 'hC',
-        targetPath: 'a.ts',
-        targetHash: 'hA',
-        kind: 'call',
-        symbolName: 'caller',
-        sourceLine: 1,
-        targetLine: 10,
-        provider: 'lsp',
-      },
-    ]);
+    replaceSemanticEdges(
+      db,
+      ['c.ts'],
+      [
+        {
+          sourcePath: 'c.ts',
+          sourceHash: 'hC',
+          targetPath: 'a.ts',
+          targetHash: 'hA',
+          kind: 'call',
+          symbolName: 'caller',
+          sourceLine: 1,
+          targetLine: 10,
+          provider: 'lsp',
+        },
+      ],
+    );
 
     deleteSemanticGraphForPaths(db, ['a.ts']);
 
@@ -161,36 +166,121 @@ describe('semantic graph metadata', () => {
     expect(count.c).toBe(0);
   });
 
+  it('clears old call edges when a changed file has no call sites', () => {
+    replaceSemanticEdges(
+      db,
+      ['a.ts'],
+      [
+        {
+          sourcePath: 'a.ts',
+          sourceHash: 'oldHash',
+          targetPath: 'a.ts',
+          targetHash: 'oldHash',
+          kind: 'call',
+          symbolName: 'target',
+          sourceLine: 3,
+          targetLine: 1,
+          provider: 'tree-sitter',
+        },
+      ],
+    );
+
+    const edgeCount = buildAndStoreCallGraph(db, [
+      { path: 'a.ts', hash: 'newHash', callSites: [] },
+    ]);
+
+    const rows = db.prepare('SELECT * FROM semantic_edges').all();
+    expect(edgeCount).toBe(0);
+    expect(rows).toEqual([]);
+  });
+
+  it('clears old call edges when changed call sites no longer match local symbols', () => {
+    replaceSemanticSymbols(
+      db,
+      ['a.ts'],
+      [
+        {
+          path: 'a.ts',
+          hash: 'newHash',
+          language: 'typescript',
+          name: 'keptTarget',
+          kind: 'function',
+          source: 'tree-sitter',
+          startLine: 1,
+          endLine: 3,
+          containerName: null,
+        },
+      ],
+    );
+    replaceSemanticEdges(
+      db,
+      ['a.ts'],
+      [
+        {
+          sourcePath: 'a.ts',
+          sourceHash: 'oldHash',
+          targetPath: 'a.ts',
+          targetHash: 'oldHash',
+          kind: 'call',
+          symbolName: 'removedTarget',
+          sourceLine: 4,
+          targetLine: 1,
+          provider: 'tree-sitter',
+        },
+      ],
+    );
+
+    const edgeCount = buildAndStoreCallGraph(db, [
+      {
+        path: 'a.ts',
+        hash: 'newHash',
+        callSites: [{ calleeName: 'missingTarget', line: 5 }],
+      },
+    ]);
+
+    const rows = db.prepare('SELECT * FROM semantic_edges').all();
+    expect(edgeCount).toBe(0);
+    expect(rows).toEqual([]);
+  });
+
   it('clears semantic graph rows on file delete and full clear', () => {
     db.prepare(
       'INSERT INTO files (path, hash, mtime, size, content, language) VALUES (?, ?, ?, ?, ?, ?)',
     ).run('a.ts', 'hA', 0, 1, 'x', 'typescript');
-    replaceSemanticSymbols(db, ['a.ts'], [
-      {
-        path: 'a.ts',
-        hash: 'hA',
-        language: 'typescript',
-        name: 'A',
-        kind: 'class',
-        source: 'ctags',
-        startLine: 1,
-        endLine: null,
-        containerName: null,
-      },
-    ]);
-    replaceSemanticEdges(db, ['a.ts'], [
-      {
-        sourcePath: 'a.ts',
-        sourceHash: 'hA',
-        targetPath: 'a.ts',
-        targetHash: 'hA',
-        kind: 'definition',
-        symbolName: 'A',
-        sourceLine: 1,
-        targetLine: 1,
-        provider: 'lsp',
-      },
-    ]);
+    replaceSemanticSymbols(
+      db,
+      ['a.ts'],
+      [
+        {
+          path: 'a.ts',
+          hash: 'hA',
+          language: 'typescript',
+          name: 'A',
+          kind: 'class',
+          source: 'ctags',
+          startLine: 1,
+          endLine: null,
+          containerName: null,
+        },
+      ],
+    );
+    replaceSemanticEdges(
+      db,
+      ['a.ts'],
+      [
+        {
+          sourcePath: 'a.ts',
+          sourceHash: 'hA',
+          targetPath: 'a.ts',
+          targetHash: 'hA',
+          kind: 'definition',
+          symbolName: 'A',
+          sourceLine: 1,
+          targetLine: 1,
+          provider: 'lsp',
+        },
+      ],
+    );
 
     batchDelete(db, ['a.ts']);
 
@@ -203,19 +293,23 @@ describe('semantic graph metadata', () => {
     expect(symbolsAfterDelete.c).toBe(0);
     expect(edgesAfterDelete.c).toBe(0);
 
-    replaceSemanticSymbols(db, ['b.ts'], [
-      {
-        path: 'b.ts',
-        hash: 'hB',
-        language: 'typescript',
-        name: 'B',
-        kind: 'class',
-        source: 'ctags',
-        startLine: 1,
-        endLine: null,
-        containerName: null,
-      },
-    ]);
+    replaceSemanticSymbols(
+      db,
+      ['b.ts'],
+      [
+        {
+          path: 'b.ts',
+          hash: 'hB',
+          language: 'typescript',
+          name: 'B',
+          kind: 'class',
+          source: 'ctags',
+          startLine: 1,
+          endLine: null,
+          containerName: null,
+        },
+      ],
+    );
     clear(db);
 
     const symbolsAfterClear = db.prepare('SELECT COUNT(*) as c FROM semantic_symbols').get() as {
