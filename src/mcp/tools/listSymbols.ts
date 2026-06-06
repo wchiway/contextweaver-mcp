@@ -23,14 +23,8 @@ export const listSymbolsSchema = z.object({
     .string()
     .optional()
     .describe('Comma-separated symbol kinds to include (e.g., "function,class,interface")'),
-  language: z
-    .string()
-    .optional()
-    .describe('Language filter (e.g., "typescript", "python", "go")'),
-  source: z
-    .string()
-    .optional()
-    .describe('Symbol source filter ("tree-sitter" or "ctags")'),
+  language: z.string().optional().describe('Language filter (e.g., "typescript", "python", "go")'),
+  source: z.string().optional().describe('Symbol source filter ("tree-sitter" or "ctags")'),
   max_results: z
     .number()
     .min(1)
@@ -117,10 +111,9 @@ export async function handleListSymbols(
     // 分组并格式化
     const byFile = new Map<string, SymbolRow[]>();
     for (const row of rows) {
-      if (!byFile.has(row.path)) {
-        byFile.set(row.path, []);
-      }
-      byFile.get(row.path)!.push(row);
+      const fileSymbols = byFile.get(row.path) ?? [];
+      fileSymbols.push(row);
+      byFile.set(row.path, fileSymbols);
     }
 
     const output: string[] = [];

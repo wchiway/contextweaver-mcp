@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   create-prerelease:
@@ -235,5 +236,3 @@ jobs:
 
       - name: Publish to MCP Registry
         run: mcp-publisher publish
-
-          files: ${{ steps.pack.outputs.tarball_path }}

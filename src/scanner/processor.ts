@@ -1,7 +1,7 @@
-import Parser from '@keqingmoe/tree-sitter';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import type Parser from '@keqingmoe/tree-sitter';
 import pLimit from 'p-limit';
 import {
   getParser,
@@ -10,8 +10,8 @@ import {
   SemanticSplitter,
 } from '../chunking/index.js';
 import { extractCtagsSymbols } from '../semantic/ctags.js';
+import { type CallSite, extractCallSites } from '../semantic/treeSitterCalls.js';
 import { extractTreeSitterSymbols } from '../semantic/treeSitterTags.js';
-import { extractCallSites, type CallSite } from '../semantic/treeSitterCalls.js';
 import type { SemanticSymbol } from '../semantic/types.js';
 import { readFileWithEncoding } from '../utils/encoding.js';
 import { sha256 } from './hash.js';
@@ -213,8 +213,8 @@ async function processFile(
     }
 
     let chunks: ProcessedChunk[] = [];
-    let semanticSymbols: SemanticSymbol[] | undefined = undefined;
-    let callSites: CallSite[] | undefined = undefined;
+    let semanticSymbols: SemanticSymbol[] | undefined;
+    let callSites: CallSite[] | undefined;
     let tree: Parser.Tree | null = null;
     let grammar: unknown = null;
 

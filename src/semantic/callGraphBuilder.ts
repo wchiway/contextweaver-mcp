@@ -131,10 +131,6 @@ export function buildAndStoreCallGraph(
 
   const edges = buildCallGraph({ db, files });
 
-  if (edges.length === 0) {
-    return 0;
-  }
-
   // 使用现有的 replaceSemanticEdges 函数存储
   const sourcePaths = [...new Set(files.map((f) => f.path))];
 

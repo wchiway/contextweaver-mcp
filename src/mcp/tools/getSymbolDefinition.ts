@@ -324,11 +324,10 @@ function querySemanticSymbols(
 /**
  * 格式化符号表查询结果为 markdown 代码块
  */
-async function formatSymbolResults(
-  db: Database.Database,
-  symbols: SymbolRow[],
-): Promise<string[]> {
-  const fileContentStmt = db.prepare<[string], FileContentRow>('SELECT content FROM files WHERE path = ?');
+async function formatSymbolResults(db: Database.Database, symbols: SymbolRow[]): Promise<string[]> {
+  const fileContentStmt = db.prepare<[string], FileContentRow>(
+    'SELECT content FROM files WHERE path = ?',
+  );
   const results: string[] = [];
 
   for (const sym of symbols) {

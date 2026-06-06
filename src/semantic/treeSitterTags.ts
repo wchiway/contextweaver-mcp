@@ -8,11 +8,11 @@
  * 零新增依赖，复用已安装的 tree-sitter grammar 包。
  */
 
-import Parser from '@keqingmoe/tree-sitter';
-import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import Parser from '@keqingmoe/tree-sitter';
 import type { SemanticSymbol } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -76,10 +76,7 @@ const queryCache = new Map<string, Parser.Query | null>();
 /**
  * 加载指定语言的 tags.scm 查询
  */
-async function loadTagsQuery(
-  language: string,
-  grammar: unknown,
-): Promise<Parser.Query | null> {
+async function loadTagsQuery(language: string, grammar: unknown): Promise<Parser.Query | null> {
   const cached = queryCache.get(language);
   if (cached !== undefined) return cached;
 
@@ -100,11 +97,11 @@ async function loadTagsQuery(
     // 应用补丁（补充上游缺失的常见符号模式）
     const patch = TAGS_PATCHES[language];
     if (patch) {
-      tagsSource += '\n' + patch;
+      tagsSource += `\n${patch}`;
     }
 
     // 创建 Query 对象（需要 Language 对象，grammar 已经从 ParserPool 加载）
-    const query = new Parser.Query(grammar as Parameters<typeof Parser.Query>[0], tagsSource);
+    const query = new Parser.Query(grammar as Parser.Language, tagsSource);
 
     queryCache.set(language, query);
     return query;
