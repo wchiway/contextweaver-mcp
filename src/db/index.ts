@@ -392,7 +392,7 @@ function migrateToV5(db: Database.Database): void {
       end_line INTEGER,
       container_name TEXT,
       updated_at INTEGER NOT NULL,
-      PRIMARY KEY (path, hash, source, kind, name, start_line)
+      PRIMARY KEY (path, hash, source, kind, name, start_line, end_line)
     );
     CREATE INDEX IF NOT EXISTS idx_semantic_symbols_path ON semantic_symbols(path);
     CREATE INDEX IF NOT EXISTS idx_semantic_symbols_name ON semantic_symbols(name);
