@@ -641,26 +641,6 @@ v1.4.0 已通过 `pending_marks` outbox 机制解决：FTS 写入成功但 vecto
 
 确认增量索引已执行（或开启 `contextweaver watch` 自动增量）。查询缓存键绑定索引版本，索引更新后旧缓存自动失效，无需手动清理。
 
-## 📜 版本历史
-
-- **v1.5.0** (2026-06): 查询缓存、文件监听、统计与多粒度 MCP 工具
-  - 新增 `QueryCache`（per-project LRU），缓存键含索引版本 + 搜索配置指纹，自动失效
-  - 新增 `contextweaver watch` 文件监听 + 防抖增量索引
-  - 新增 `contextweaver stats` CLI（`--json`）与 MCP `stats` 工具，三类指标 + 一致性诊断
-  - 新增 3 个 MCP 工具：`list-files` / `find-references` / `get-symbol-definition`，及对应 CLI 镜像命令
-  - 新增 `CW_SEARCH_*` 环境变量覆盖搜索参数（带边界钳制）
-  - 28 个测试文件 / 156 个测试用例
-- **v1.4.0** (2026-05): 数据架构与跨库一致性大修
-  - LanceDB chunks 表移除 `display_code/vector_text`，正文回查 `files.content`
-  - SemanticSplitter 偏移统一到 UTF-16 字符域
-  - schema_version 2 → 3，新增 `pending_marks` outbox + 三态迁移状态机
-  - 新增 `contextweaver migrate` CLI
-  - 跨进程 advisory lock 防止迁移竞争
-- **v1.3.x**: 跨库写入事务性、scan 末尾自动 GC、files_fts 外部内容表
-- **v1.2.x**: 搜索管道优化、索引内存优化
-- **v1.1.x**: 智能 TopK 截断、Smart Cutoff
-- **v1.0.x**: 初始 release
-
 ## 📄 开源协议
 
 本项目采用 MIT 许可证。

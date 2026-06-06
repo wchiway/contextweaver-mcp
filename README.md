@@ -642,26 +642,6 @@ v1.4.0 solves this via the `pending_marks` outbox: when an FTS write succeeds bu
 
 Confirm incremental indexing has run (or enable `contextweaver watch` for automatic increments). The query cache key is bound to the index version, so old cache entries invalidate automatically after an index update — no manual clearing needed.
 
-## 📜 Version History
-
-- **v1.5.0** (2026-06): query cache, file watching, statistics, and multi-granularity MCP tools
-  - Added `QueryCache` (per-project LRU); the cache key includes the index version + search-config fingerprint and invalidates automatically
-  - Added `contextweaver watch` for file watching + debounced incremental indexing
-  - Added the `contextweaver stats` CLI (`--json`) and MCP `stats` tool: three metric groups + consistency diagnostics
-  - Added 3 MCP tools: `list-files` / `find-references` / `get-symbol-definition`, plus their CLI mirror commands
-  - Added `CW_SEARCH_*` environment variables to override search parameters (with bounds clamping)
-  - 28 test files / 156 test cases
-- **v1.4.0** (2026-05): data architecture and cross-store consistency overhaul
-  - LanceDB chunks table drops `display_code/vector_text`; content is read back from `files.content`
-  - SemanticSplitter offsets unified to the UTF-16 character domain
-  - schema_version 2 → 3; added the `pending_marks` outbox + tri-state migration state machine
-  - Added the `contextweaver migrate` CLI
-  - Cross-process advisory lock prevents migration races
-- **v1.3.x**: cross-store write transactionality, trailing auto-GC after scan, files_fts external-content table
-- **v1.2.x**: search pipeline optimization, indexing memory optimization
-- **v1.1.x**: Smart TopK cutoff, Smart Cutoff
-- **v1.0.x**: initial release
-
 ## 📄 License
 
 This project is licensed under the MIT License.
