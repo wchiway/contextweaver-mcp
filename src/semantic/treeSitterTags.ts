@@ -188,6 +188,11 @@ export async function extractTreeSitterSymbols(options: {
         continue;
       }
 
+      // 只保留定义点，排除引用点（如 @reference.call）
+      if (!isDefinition(definitionCapture.name)) {
+        continue;
+      }
+
       const symbolName = nameCapture.node.text;
       if (!symbolName || symbolName.length > 200) {
         continue; // 名称为空或异常长（可能提取错误）
