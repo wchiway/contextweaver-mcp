@@ -60,7 +60,7 @@ vi.mock('../../src/utils/logger.js', () => ({
   isDebugEnabled: () => false,
 }));
 
-async function setupDb(): Promise<Database.Database> {
+function setupDb(): Database.Database {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE files (
@@ -75,12 +75,24 @@ async function setupDb(): Promise<Database.Database> {
     CREATE TABLE metadata (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
-    )
+    );
+    CREATE TABLE IF NOT EXISTS semantic_symbols (
+      path TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      language TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      source TEXT NOT NULL CHECK(source IN ('tree-sitter', 'ctags', 'lsp')),
+      start_line INTEGER NOT NULL,
+      end_line INTEGER,
+      container_name TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (path, hash, source, kind, name, start_line)
+    );
+    CREATE INDEX IF NOT EXISTS idx_semantic_symbols_path ON semantic_symbols(path);
+    CREATE INDEX IF NOT EXISTS idx_semantic_symbols_name ON semantic_symbols(name);
+    CREATE INDEX IF NOT EXISTS idx_semantic_symbols_source ON semantic_symbols(source);
   `);
-
-  // 动态导入以确保 mock 生效
-  const { migrateSchema } = await import('../../src/db/index.js');
-  migrateSchema(db);
 
   return db;
 }
@@ -117,8 +129,8 @@ function makeChunk(
 }
 
 describe('handleGetSymbolDefinition', () => {
-  beforeEach(async () => {
-    state.db = await setupDb();
+  beforeEach(() => {
+    state.db = setupDb();
     state.ensureIndexed.mockClear();
     state.searchChunksFts.mockReset();
     state.getFilesChunks.mockReset();
