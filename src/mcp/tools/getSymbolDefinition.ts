@@ -163,6 +163,7 @@ function rankCandidates(a: DefinitionCandidate, b: DefinitionCandidate): number 
 export async function handleGetSymbolDefinition(
   args: GetSymbolDefinitionInput,
   onProgress?: ProgressCallback,
+  injectedDb?: Database.Database,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const { repo_path, symbol, hint_path, max_results = 3 } = args;
   const projectId = generateProjectId(repo_path);
@@ -171,7 +172,8 @@ export async function handleGetSymbolDefinition(
 
   await ensureIndexed(repo_path, projectId, { onProgress });
 
-  const db = initDb(projectId);
+  const db = injectedDb ?? initDb(projectId);
+  const shouldClose = !injectedDb;
   try {
     // 策略 1: 优先查询 semantic_symbols 表（tree-sitter tags / ctags）
     const symbolResults = querySemanticSymbols(db, symbol, hint_path, max_results);
@@ -265,7 +267,9 @@ export async function handleGetSymbolDefinition(
       `Found ${ranked.length} symbol definitions for "${symbol}"\n\n${body}`,
     );
   } finally {
-    db.close();
+    if (shouldClose) {
+      db.close();
+    }
   }
 }
 

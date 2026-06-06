@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 
 interface MockChunkRecord {
   chunk_id: string;
@@ -24,14 +24,10 @@ const state = vi.hoisted(() => ({
   getFilesChunks: vi.fn(),
 }));
 
-vi.mock('../../src/db/index.js', async (importOriginal) => {
-  const actual = await importOriginal() as any;
-  return {
-    ...actual,
-    generateProjectId: () => 'project-test',
-    initDb: () => state.db,
-  };
-});
+vi.mock('../../src/db/index.js', () => ({
+  generateProjectId: vi.fn(() => 'project-test'),
+  initDb: vi.fn(() => state.db),
+}));
 
 vi.mock('../../src/mcp/tools/shared.js', () => ({
   ensureIndexed: (...args: unknown[]) => state.ensureIndexed(...args),
@@ -87,7 +83,7 @@ function setupDb(): Database.Database {
       end_line INTEGER,
       container_name TEXT,
       updated_at INTEGER NOT NULL,
-      PRIMARY KEY (path, hash, source, kind, name, start_line)
+      PRIMARY KEY (path, hash, source, kind, name, start_line, end_line)
     );
     CREATE INDEX IF NOT EXISTS idx_semantic_symbols_path ON semantic_symbols(path);
     CREATE INDEX IF NOT EXISTS idx_semantic_symbols_name ON semantic_symbols(name);
@@ -95,37 +91,6 @@ function setupDb(): Database.Database {
   `);
 
   return db;
-}
-
-function insertFile(db: Database.Database, path: string, content: string): void {
-  db.prepare(
-    'INSERT INTO files (path, hash, mtime, size, content, language) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(path, `hash-${path}`, 0, content.length, content, 'typescript');
-}
-
-function makeChunk(
-  filePath: string,
-  breadcrumb: string,
-  content: string,
-  language = 'typescript',
-  chunkIndex = 0,
-  startIndex = 0,
-): MockChunkRecord {
-  return {
-    chunk_id: `${filePath}#hash#${chunkIndex}`,
-    file_path: filePath,
-    file_hash: 'hash',
-    chunk_index: chunkIndex,
-    vector: [],
-    language,
-    breadcrumb,
-    start_index: startIndex,
-    end_index: startIndex + content.length,
-    raw_start: startIndex,
-    raw_end: startIndex + content.length,
-    vec_start: startIndex,
-    vec_end: startIndex + content.length,
-  };
 }
 
 describe('handleGetSymbolDefinition', () => {
@@ -142,114 +107,172 @@ describe('handleGetSymbolDefinition', () => {
     vi.clearAllMocks();
   });
 
-  it('prefers breadcrumb exact matches over plain FTS fallback hits', async () => {
-    const authContent = ['export function login(user: string) {', '  return user;', '}'].join('\n');
-    const legacyContent = "export const login = makeLogin();";
-    insertFile(state.db as Database.Database, 'src/auth.ts', authContent);
-    insertFile(state.db as Database.Database, 'src/legacy.ts', legacyContent);
-
-    state.searchChunksFts.mockReturnValue([
-      { chunkId: 'src/legacy.ts#hash#0', filePath: 'src/legacy.ts', chunkIndex: 0, score: 9 },
-      { chunkId: 'src/auth.ts#hash#0', filePath: 'src/auth.ts', chunkIndex: 0, score: 1 },
-    ]);
-    state.getFilesChunks.mockResolvedValue(
-      new Map<string, MockChunkRecord[]>([
-        ['src/auth.ts', [makeChunk('src/auth.ts', 'AuthService > login', authContent)]],
-        ['src/legacy.ts', [makeChunk('src/legacy.ts', 'LegacyService > helpers', legacyContent)]],
-      ]),
-    );
-
+  it('should query semantic_symbols and return formatted definitions', async () => {
     const { handleGetSymbolDefinition } = await import(
       '../../src/mcp/tools/getSymbolDefinition.js'
     );
 
-    const response = await handleGetSymbolDefinition({
-      repo_path: '/repo',
-      symbol: 'login',
-      max_results: 1,
-    });
+    // 插入测试数据
+    state.db!.exec(`
+      INSERT INTO files (path, hash, mtime, size, content, language, vector_index_hash)
+      VALUES ('src/utils.ts', 'hash1', 1234567890, 100, 'export function testFunc() {\n  return 42;\n}', 'typescript', 'vec1');
 
-    const text = response.content[0]?.text ?? '';
-    expect(text).toContain('Found 1 symbol definitions for "login"');
-    expect(text).toContain('## src/auth.ts (L1-L3)');
-    expect(text).not.toContain('src/legacy.ts');
+      INSERT INTO semantic_symbols (path, hash, language, name, kind, source, start_line, end_line, container_name, updated_at)
+      VALUES ('src/utils.ts', 'hash1', 'typescript', 'testFunc', 'function', 'tree-sitter', 1, 3, NULL, 1234567890);
+    `);
+
+    state.getFilesChunks.mockResolvedValue(new Map());
+
+    const result = await handleGetSymbolDefinition(
+      { repo_path: '/test/repo', symbol: 'testFunc' },
+      undefined,
+      state.db!,
+    );
+
+    const text = result.content[0]?.text ?? '';
+    expect(text).toContain('Found 1 symbol definitions for "testFunc"');
+    expect(text).toContain('src/utils.ts');
+    expect(text).toContain('L1-L3');
+    expect(text).toContain('kind: function');
+    expect(text).toContain('source: tree-sitter');
   });
 
-  it('uses hint_path to rank same-name breadcrumb matches by common prefix length', async () => {
-    const libContent = 'export function createClient() {\n  return {};\n}';
-    const testContent = 'export function createClient() {\n  return { mocked: true };\n}';
-    insertFile(state.db as Database.Database, 'src/lib/createClient.ts', libContent);
-    insertFile(state.db as Database.Database, 'tests/helpers/createClient.ts', testContent);
-
-    state.searchChunksFts.mockReturnValue([
-      {
-        chunkId: 'tests/helpers/createClient.ts#hash#0',
-        filePath: 'tests/helpers/createClient.ts',
-        chunkIndex: 0,
-        score: 8,
-      },
-      {
-        chunkId: 'src/lib/createClient.ts#hash#0',
-        filePath: 'src/lib/createClient.ts',
-        chunkIndex: 0,
-        score: 7,
-      },
-    ]);
-    state.getFilesChunks.mockResolvedValue(
-      new Map<string, MockChunkRecord[]>([
-        [
-          'tests/helpers/createClient.ts',
-          [makeChunk('tests/helpers/createClient.ts', 'Helpers > createClient', testContent)],
-        ],
-        ['src/lib/createClient.ts', [makeChunk('src/lib/createClient.ts', 'Lib > createClient', libContent)]],
-      ]),
-    );
-
+  it('should prioritize tree-sitter over ctags in semantic_symbols', async () => {
     const { handleGetSymbolDefinition } = await import(
       '../../src/mcp/tools/getSymbolDefinition.js'
     );
 
-    const response = await handleGetSymbolDefinition({
-      repo_path: '/repo',
-      symbol: 'createClient',
-      hint_path: 'src/features/auth/login.ts',
-      max_results: 1,
-    });
+    state.db!.exec(`
+      INSERT INTO files (path, hash, mtime, size, content, language, vector_index_hash)
+      VALUES
+        ('src/a.ts', 'hash1', 1234567890, 100, 'export class MyClass {}', 'typescript', 'vec1'),
+        ('src/b.ts', 'hash2', 1234567890, 100, 'export class MyClass {}', 'typescript', 'vec2');
 
-    const text = response.content[0]?.text ?? '';
-    expect(text).toContain('## src/lib/createClient.ts (L1-L3)');
-    expect(text).not.toContain('tests/helpers/createClient.ts');
+      INSERT INTO semantic_symbols (path, hash, language, name, kind, source, start_line, end_line, container_name, updated_at)
+      VALUES
+        ('src/b.ts', 'hash2', 'typescript', 'MyClass', 'class', 'ctags', 1, 1, NULL, 1234567890),
+        ('src/a.ts', 'hash1', 'typescript', 'MyClass', 'class', 'tree-sitter', 1, 1, NULL, 1234567890);
+    `);
+
+    state.getFilesChunks.mockResolvedValue(new Map());
+
+    const result = await handleGetSymbolDefinition(
+      { repo_path: '/test/repo', symbol: 'MyClass', max_results: 2 },
+      undefined,
+      state.db!,
+    );
+
+    const text = result.content[0]?.text ?? '';
+    const lines = text.split('\n');
+    const firstDefLine = lines.find((l) => l.startsWith('## src/'));
+    expect(firstDefLine).toContain('src/a.ts'); // tree-sitter 应该排在前面
   });
 
-  it('falls back to top-level const definitions and reports correct line numbers', async () => {
-    const fileContent = ['// header', '', "export const API_URL = 'https://example.com';", ''].join(
-      '\n',
-    );
-    const declaration = "export const API_URL = 'https://example.com';\n";
-    insertFile(state.db as Database.Database, 'src/config.ts', fileContent);
-
-    const startIndex = fileContent.indexOf('export const API_URL');
-    state.searchChunksFts.mockReturnValue([
-      { chunkId: 'src/config.ts#hash#0', filePath: 'src/config.ts', chunkIndex: 0, score: 6 },
-    ]);
-    state.getFilesChunks.mockResolvedValue(
-      new Map<string, MockChunkRecord[]>([
-        ['src/config.ts', [makeChunk('src/config.ts', 'Config', declaration, 'typescript', 0, startIndex)]],
-      ]),
-    );
-
+  it('should use hint_path to rank same-name symbols by prefix match', async () => {
     const { handleGetSymbolDefinition } = await import(
       '../../src/mcp/tools/getSymbolDefinition.js'
     );
 
-    const response = await handleGetSymbolDefinition({
-      repo_path: '/repo',
-      symbol: 'API_URL',
-      max_results: 1,
-    });
+    state.db!.exec(`
+      INSERT INTO files (path, hash, mtime, size, content, language, vector_index_hash)
+      VALUES
+        ('src/auth/login.ts', 'hash1', 1234567890, 100, 'export function validate() {}', 'typescript', 'vec1'),
+        ('src/utils/validate.ts', 'hash2', 1234567890, 100, 'export function validate() {}', 'typescript', 'vec2');
 
-    const text = response.content[0]?.text ?? '';
-    expect(text).toContain('## src/config.ts (L3-L3)');
-    expect(text).toContain("export const API_URL = 'https://example.com';");
+      INSERT INTO semantic_symbols (path, hash, language, name, kind, source, start_line, end_line, container_name, updated_at)
+      VALUES
+        ('src/auth/login.ts', 'hash1', 'typescript', 'validate', 'function', 'tree-sitter', 1, 1, NULL, 1234567890),
+        ('src/utils/validate.ts', 'hash2', 'typescript', 'validate', 'function', 'tree-sitter', 1, 1, NULL, 1234567890);
+    `);
+
+    state.getFilesChunks.mockResolvedValue(new Map());
+
+    const result = await handleGetSymbolDefinition(
+      { repo_path: '/test/repo', symbol: 'validate', hint_path: 'src/auth/middleware.ts' },
+      undefined,
+      state.db!,
+    );
+
+    const text = result.content[0]?.text ?? '';
+    const lines = text.split('\n');
+    const firstDefLine = lines.find((l) => l.startsWith('## src/'));
+    expect(firstDefLine).toContain('src/auth/login.ts'); // 更长的公共前缀
+  });
+
+  it('should fall back to FTS + pattern matching when semantic_symbols is empty', async () => {
+    const { handleGetSymbolDefinition } = await import(
+      '../../src/mcp/tools/getSymbolDefinition.js'
+    );
+
+    const mockChunk: MockChunkRecord = {
+      chunk_id: 'chunk1',
+      file_path: 'src/legacy.js',
+      file_hash: 'hash1',
+      chunk_index: 0,
+      vector: [0.1, 0.2],
+      language: 'javascript',
+      breadcrumb: 'oldFunc',
+      start_index: 0,
+      end_index: 30,
+      raw_start: 0,
+      raw_end: 30,
+      vec_start: 0,
+      vec_end: 30,
+    };
+
+    state.db!.exec(`
+      INSERT INTO files (path, hash, mtime, size, content, language, vector_index_hash)
+      VALUES ('src/legacy.js', 'hash1', 1234567890, 100, 'function oldFunc() {\n  return 1;\n}', 'javascript', 'vec1');
+    `);
+
+    state.searchChunksFts.mockReturnValue([
+      { filePath: 'src/legacy.js', chunkIndex: 0, score: 0.9 },
+    ]);
+
+    state.getFilesChunks.mockResolvedValue(
+      new Map([['src/legacy.js', [mockChunk]]]),
+    );
+
+    const result = await handleGetSymbolDefinition(
+      { repo_path: '/test/repo', symbol: 'oldFunc' },
+      undefined,
+      state.db!,
+    );
+
+    const text = result.content[0]?.text ?? '';
+    expect(text).toContain('Found 1 symbol definitions for "oldFunc"');
+    expect(text).toContain('src/legacy.js');
+    expect(text).toContain('function oldFunc()');
+  });
+
+  it('should filter out call and reference kinds from semantic_symbols', async () => {
+    const { handleGetSymbolDefinition } = await import(
+      '../../src/mcp/tools/getSymbolDefinition.js'
+    );
+
+    state.db!.exec(`
+      INSERT INTO files (path, hash, mtime, size, content, language, vector_index_hash)
+      VALUES
+        ('src/def.ts', 'hash1', 1234567890, 100, 'export function foo() {}', 'typescript', 'vec1'),
+        ('src/call.ts', 'hash2', 1234567890, 100, 'foo();', 'typescript', 'vec2');
+
+      INSERT INTO semantic_symbols (path, hash, language, name, kind, source, start_line, end_line, container_name, updated_at)
+      VALUES
+        ('src/def.ts', 'hash1', 'typescript', 'foo', 'function', 'tree-sitter', 1, 1, NULL, 1234567890),
+        ('src/call.ts', 'hash2', 'typescript', 'foo', 'call', 'tree-sitter', 1, 1, NULL, 1234567890);
+    `);
+
+    state.getFilesChunks.mockResolvedValue(new Map());
+
+    const result = await handleGetSymbolDefinition(
+      { repo_path: '/test/repo', symbol: 'foo' },
+      undefined,
+      state.db!,
+    );
+
+    const text = result.content[0]?.text ?? '';
+    expect(text).toContain('Found 1 symbol definitions');
+    expect(text).toContain('src/def.ts');
+    expect(text).not.toContain('src/call.ts');
   });
 });
