@@ -226,11 +226,7 @@ jobs:
           mcp-publisher --version
 
       - name: Authenticate with MCP Registry
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 使用 GitHub token 进行认证
-          echo "$GITHUB_TOKEN" | mcp-publisher login github --token-stdin
+        run: mcp-publisher login github-oidc
 
       - name: Publish to MCP Registry
         run: mcp-publisher publish
