@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.wchiway/contextweaver",
+  "description": "Semantic code retrieval engine with hybrid search, context expansion, and 40+ language support.",
+  "repository": {
+    "url": "https://github.com/wchiway/contextweaver-mcp",
+    "source": "github"
+  },
+  "homepage": "https://contextweaver.work",
+  "version": "1.5.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@chiway/contextweaver",
+      "version": "1.5.3-rc.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

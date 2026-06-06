@@ -222,3 +222,22 @@ jobs:
           prerelease: true
           body_path: release-body.md
           files: ${{ steps.pack.outputs.tarball_path }}
+
+      # 发布到 MCP Registry
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+          mcp-publisher --version
+
+      - name: Authenticate with MCP Registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 使用 GitHub token 进行认证
+          echo "$GITHUB_TOKEN" | mcp-publisher login github --token-stdin
+
+      - name: Publish to MCP Registry
+        run: mcp-publisher publish
+
+          files: ${{ steps.pack.outputs.tarball_path }}
