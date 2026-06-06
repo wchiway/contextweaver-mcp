@@ -24,10 +24,14 @@ const state = vi.hoisted(() => ({
   getFilesChunks: vi.fn(),
 }));
 
-vi.mock('../../src/db/index.js', () => ({
-  generateProjectId: () => 'project-test',
-  initDb: () => state.db,
-}));
+vi.mock('../../src/db/index.js', async (importOriginal) => {
+  const actual = await importOriginal() as any;
+  return {
+    ...actual,
+    generateProjectId: () => 'project-test',
+    initDb: () => state.db,
+  };
+});
 
 vi.mock('../../src/mcp/tools/shared.js', () => ({
   ensureIndexed: (...args: unknown[]) => state.ensureIndexed(...args),
@@ -56,7 +60,7 @@ vi.mock('../../src/utils/logger.js', () => ({
   isDebugEnabled: () => false,
 }));
 
-function setupDb(): Database.Database {
+async function setupDb(): Promise<Database.Database> {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE files (
@@ -67,8 +71,16 @@ function setupDb(): Database.Database {
       content TEXT,
       language TEXT NOT NULL,
       vector_index_hash TEXT
+    );
+    CREATE TABLE metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     )
   `);
+
+  // 动态导入以确保 mock 生效
+  const { migrateSchema } = await import('../../src/db/index.js');
+  migrateSchema(db);
 
   return db;
 }
@@ -105,8 +117,8 @@ function makeChunk(
 }
 
 describe('handleGetSymbolDefinition', () => {
-  beforeEach(() => {
-    state.db = setupDb();
+  beforeEach(async () => {
+    state.db = await setupDb();
     state.ensureIndexed.mockClear();
     state.searchChunksFts.mockReset();
     state.getFilesChunks.mockReset();
