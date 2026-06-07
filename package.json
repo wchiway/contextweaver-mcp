@@ -35,7 +35,7 @@
   "dependencies": {
     "@keqingmoe/tree-sitter": "^0.26.2",
     "@lancedb/lancedb": "^0.22.0",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@modelcontextprotocol/sdk": "^1.25.2",
     "better-sqlite3": "^12.2.0",
     "cac": "^6.7.14",
     "chardet": "^2.1.1",
