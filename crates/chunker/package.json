@@ -1,6 +1,6 @@
 {
   "name": "@chiway/contextweaver-chunker",
-  "version": "1.5.3",
+  "version": "1.6.0-alpha.0",
   "description": "Native (Rust/napi-rs) chunking core for ContextWeaver",
   "license": "MIT",
   "author": "chiway",
