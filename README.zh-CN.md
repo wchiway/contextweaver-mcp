@@ -9,6 +9,27 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/@chiway/contextweaver">
+    <img src="https://img.shields.io/npm/v/@chiway/contextweaver?color=blue&label=npm" alt="npm version" />
+  </a>
+  <a href="https://www.npmjs.com/package/@chiway/contextweaver">
+    <img src="https://img.shields.io/npm/dm/@chiway/contextweaver" alt="npm downloads" />
+  </a>
+  <a href="https://github.com/wchiway/contextweaver-mcp">
+    <img src="https://img.shields.io/github/stars/wchiway/contextweaver-mcp?style=social" alt="GitHub stars" />
+  </a>
+  <a href="https://lobehub.com/mcp/wchiway-contextweaver-mcp">
+    <img src="https://lobehub.com/badge/mcp/wchiway-contextweaver-mcp" alt="MCP Bridge" />
+  </a>
+  <a href="https://vscode.dev/redirect/mcp/install?name=contextweaver&config=%7B%22command%22%3A%22contextweaver%22%2C%22args%22%3A%5B%22mcp%22%5D%7D">
+    <img src="https://img.shields.io/badge/Install%20in-VS%20Code-007ACC?logo=visualstudiocode" alt="安装到 VS Code" />
+  </a>
+  <a href="https://insiders.vscode.dev/redirect/mcp/install?name=contextweaver&config=%7B%22command%22%3A%22contextweaver%22%2C%22args%22%3A%5B%22mcp%22%5D%7D">
+    <img src="https://img.shields.io/badge/Install%20in-VS%20Code%20Insiders-1DB954?logo=visualstudiocode" alt="安装到 VS Code Insiders" />
+  </a>
+</p>
+
+<p align="center">
   <strong>简体中文</strong> ·
   <a href="README.md">English</a>
 </p>
