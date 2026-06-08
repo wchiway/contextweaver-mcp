@@ -16,3 +16,9 @@ test-*
 *.tgz
 docs/plans/
 CLAUDE.md
+
+# Rust / napi-rs
+target/
+crates/**/*.node
+crates/**/index.js
+crates/**/index.d.ts

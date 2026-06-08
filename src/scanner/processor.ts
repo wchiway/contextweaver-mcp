@@ -9,6 +9,7 @@ import {
   type ProcessedChunk,
   SemanticSplitter,
 } from '../chunking/index.js';
+import { getNativeChunker } from '../chunking/nativeChunker.js';
 import { extractCtagsSymbols } from '../semantic/ctags.js';
 import { type CallSite, extractCallSites } from '../semantic/treeSitterCalls.js';
 import { extractTreeSitterSymbols } from '../semantic/treeSitterTags.js';
@@ -78,13 +79,18 @@ function getAdaptiveConcurrency(): number {
 }
 
 /**
- * 分片器单例
+ * 分片配置（TS 与 Rust 路径共用，保证产物一致）
  */
-const splitter = new SemanticSplitter({
+const SPLITTER_CONFIG = {
   maxChunkSize: 500,
   minChunkSize: 50,
   chunkOverlap: 40, // 混合检索(BM25+向量+rerank)下的保守 overlap
-});
+};
+
+/**
+ * 分片器单例（TS fallback 路径使用）
+ */
+const splitter = new SemanticSplitter(SPLITTER_CONFIG);
 
 /**
  * 文件处理结果
@@ -215,47 +221,89 @@ async function processFile(
     let chunks: ProcessedChunk[] = [];
     let semanticSymbols: SemanticSymbol[] | undefined;
     let callSites: CallSite[] | undefined;
-    let tree: Parser.Tree | null = null;
-    let grammar: unknown = null;
 
-    if (isLanguageSupported(language)) {
-      try {
-        const parser = await getParser(language);
-        if (parser) {
-          tree = parser.parse(content);
-          chunks = splitter.split(tree, content, relPath, language);
+    const native = getNativeChunker();
 
-          // AST 解析成功，保存 grammar 用于符号提取
-          if (chunks.length > 0) {
-            grammar = parser.getLanguage();
-          }
+    if (native) {
+      // ── Rust 单次解析路径 ──────────────────────────────────────────────
+      // processFile 一次解析复用同一棵 tree 产出 chunks + symbols + callSites。
+      let astOk = false;
+      if (isLanguageSupported(language)) {
+        const result = native.processFile(content, relPath, language, SPLITTER_CONFIG);
+        chunks = result.chunks as unknown as ProcessedChunk[];
+        astOk = result.astOk;
+        if (astOk) {
+          semanticSymbols = result.symbols.map((s) => ({
+            path: relPath,
+            hash,
+            language,
+            name: s.name,
+            kind: s.kind,
+            source: 'tree-sitter' as const,
+            startLine: s.startLine,
+            endLine: s.endLine,
+            containerName: null,
+          }));
+          callSites = result.callSites.map((c) => ({
+            calleeName: c.calleeName,
+            line: c.line,
+            qualifier: c.qualifier ?? undefined,
+          }));
         }
-      } catch (err) {
-        const error = err as { message?: string };
-        console.warn(`[Chunking] AST failed for ${relPath}: ${error.message}`);
       }
-    }
 
-    if (chunks.length === 0 && FALLBACK_LANGS.has(language)) {
-      chunks = splitter.splitPlainText(content, relPath, language);
-    }
+      if (chunks.length === 0 && FALLBACK_LANGS.has(language)) {
+        chunks = native.splitPlainText(content, relPath, language, SPLITTER_CONFIG) as unknown as ProcessedChunk[];
+      }
 
-    // 符号提取策略：
-    // 1. AST 成功 → 用 tree-sitter tags（主路径）
-    // 2. AST 失败 → 用 ctags 兜底（需要外部二进制）
-    if (tree && grammar) {
-      semanticSymbols = await extractTreeSitterSymbols({
-        tree,
-        grammar,
-        relPath,
-        hash,
-        language,
-      });
-
-      // 调用提取：复用已解析的 AST
-      callSites = extractCallSites(tree, language);
+      // AST 未成功（不支持/解析失败/无 chunks）→ ctags 兜底（与 TS 路径一致）
+      if (!astOk) {
+        semanticSymbols = await extractCtagsSymbols({ absPath, relPath, hash, language });
+      }
     } else {
-      semanticSymbols = await extractCtagsSymbols({ absPath, relPath, hash, language });
+      // ── TypeScript fallback 路径（Rust 不可用时）────────────────────────
+      let tree: Parser.Tree | null = null;
+      let grammar: unknown = null;
+
+      if (isLanguageSupported(language)) {
+        try {
+          const parser = await getParser(language);
+          if (parser) {
+            tree = parser.parse(content);
+            chunks = splitter.split(tree, content, relPath, language);
+
+            // AST 解析成功，保存 grammar 用于符号提取
+            if (chunks.length > 0) {
+              grammar = parser.getLanguage();
+            }
+          }
+        } catch (err) {
+          const error = err as { message?: string };
+          console.warn(`[Chunking] AST failed for ${relPath}: ${error.message}`);
+        }
+      }
+
+      if (chunks.length === 0 && FALLBACK_LANGS.has(language)) {
+        chunks = splitter.splitPlainText(content, relPath, language);
+      }
+
+      // 符号提取策略：
+      // 1. AST 成功 → 用 tree-sitter tags（主路径）
+      // 2. AST 失败 → 用 ctags 兜底（需要外部二进制）
+      if (tree && grammar) {
+        semanticSymbols = await extractTreeSitterSymbols({
+          tree,
+          grammar,
+          relPath,
+          hash,
+          language,
+        });
+
+        // 调用提取：复用已解析的 AST
+        callSites = extractCallSites(tree, language);
+      } else {
+        semanticSymbols = await extractCtagsSymbols({ absPath, relPath, hash, language });
+      }
     }
 
     return {
