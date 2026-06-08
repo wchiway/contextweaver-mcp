@@ -16,12 +16,80 @@ on:
 permissions:
   contents: write
 
-jobs:
-  create-prerelease:
-    name: Build Package and Create GitHub Prerelease
-    if: ${{ (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && contains(github.ref_name, '-')) }}
-    runs-on: ubuntu-latest
+env:
+  CHUNKER_DIR: crates/chunker
 
+jobs:
+  # ── 阶段 1：跨平台编译 native 分片器（验证各平台可构建）────────────
+  build:
+    name: Build ${{ matrix.target }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && contains(github.ref_name, '-')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: x86_64-apple-darwin
+            host: macos-13
+          - target: aarch64-apple-darwin
+            host: macos-latest
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+    runs-on: ${{ matrix.host }}
+    steps:
+      - name: Checkout Code (tag on dispatch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.CHUNKER_DIR }}/target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('crates/chunker/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native addon
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: pnpm exec napi build --platform --release --target ${{ matrix.target }} --use-napi-cross
+
+      - name: Upload native binding artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: ${{ env.CHUNKER_DIR }}/*.node
+          if-no-files-found: error
+
+  # ── 阶段 2：打包本地 tarball + 创建 GitHub Prerelease（不发布 npm）──
+  prerelease:
+    name: Pack tarballs and create GitHub Prerelease
+    needs: build
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Code (tag on dispatch)
         uses: actions/checkout@v4
@@ -75,19 +143,40 @@ jobs:
             exit 1
           fi
 
-      - name: Pack local npm tarball
+      - name: Download all native bindings
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ env.CHUNKER_DIR }}/artifacts
+          pattern: bindings-*
+          merge-multiple: true
+
+      - name: Assemble chunker platform packages
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: |
+          pnpm exec napi create-npm-dirs
+          pnpm exec napi artifacts --output-dir artifacts --npm-dir npm
+          pnpm exec napi pre-publish -t npm --skip-optional-publish
+
+      - name: Pack all tarballs
         id: pack
         run: |
           mkdir -p artifacts
-          TARBALL="$(npm pack --pack-destination artifacts --json | node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(0,'utf8')); console.log(data[0].filename)")"
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "tarball_path=artifacts/$TARBALL" >> "$GITHUB_OUTPUT"
+          # 主应用包
+          MAIN_TARBALL="$(npm pack --pack-destination artifacts --json | node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(0,'utf8')); console.log(data[0].filename)")"
+          echo "main_tarball=$MAIN_TARBALL" >> "$GITHUB_OUTPUT"
+          # chunker 主包
+          (cd "${CHUNKER_DIR}" && npm pack --pack-destination ../../artifacts >/dev/null)
+          # 各平台子包
+          for pkg in "${CHUNKER_DIR}"/npm/*/; do
+            (cd "$pkg" && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts" >/dev/null) || true
+          done
+          ls -la artifacts
 
-      - name: Upload local npm tarball artifact
+      - name: Upload tarball artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.rel.outputs.tag }}-npm-tarball
-          path: ${{ steps.pack.outputs.tarball_path }}
+          name: ${{ steps.rel.outputs.tag }}-tarballs
+          path: artifacts/*.tgz
           if-no-files-found: error
 
       - name: Collect changelog input
@@ -133,11 +222,13 @@ jobs:
               echo
               echo "### Local npm package"
               echo
-              echo "Download the attached tarball or workflow artifact, then install it locally:"
+              echo "Download the attached main tarball plus the chunker tarball matching your platform, then install:"
               echo
               echo '```bash'
-              echo "npm install -g ./${{ steps.pack.outputs.tarball }}"
+              echo "npm install -g ./${{ steps.pack.outputs.main_tarball }}"
               echo '```'
+              echo
+              echo "Native chunker is optional — without the matching platform tarball it falls back to the TypeScript path."
               echo
               echo "This prerelease does not publish to npm."
             } > release-body.md
@@ -194,11 +285,13 @@ jobs:
             echo
             echo "### Local npm package"
             echo
-            echo "Download the attached tarball or workflow artifact, then install it locally:"
+            echo "Download the attached main tarball plus the chunker tarball matching your platform, then install:"
             echo
             echo '```bash'
-            echo "npm install -g ./${{ steps.pack.outputs.tarball }}"
+            echo "npm install -g ./${{ steps.pack.outputs.main_tarball }}"
             echo '```'
+            echo
+            echo "Native chunker is optional — without the matching platform tarball it falls back to the TypeScript path."
             echo
             echo "This prerelease does not publish to npm."
           } > release-body.md
@@ -221,4 +314,4 @@ jobs:
           draft: false
           prerelease: true
           body_path: release-body.md
-          files: ${{ steps.pack.outputs.tarball_path }}
+          files: artifacts/*.tgz

@@ -1,9 +1,23 @@
 {
   "name": "@chiway/contextweaver-chunker",
-  "version": "0.0.0",
-  "private": true,
+  "version": "1.5.3",
+  "description": "Native (Rust/napi-rs) chunking core for ContextWeaver",
+  "license": "MIT",
+  "author": "chiway",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wchiway/contextweaver-mcp.git"
+  },
+  "homepage": "https://contextweaver.work",
   "main": "index.js",
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "napi": {
     "binaryName": "chunker",
     "packageName": "@chiway/contextweaver-chunker",
@@ -17,6 +31,8 @@
   },
   "scripts": {
     "build": "napi build --platform --release",
-    "build:debug": "napi build --platform"
+    "build:debug": "napi build --platform",
+    "artifacts": "napi artifacts",
+    "create-npm-dirs": "napi create-npm-dirs"
   }
 }
