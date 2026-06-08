@@ -51,6 +51,7 @@
 
 ### 🧠 AST Semantic Chunking
 - **Tree-sitter parsing**: supports TypeScript, JavaScript, Python, Go, Java, Rust, C, C++, C#, and more
+- **Native Rust chunker** (v1.6.0+): the CPU-heavy chunking layer (Tree-sitter parse + AST traversal + symbol/call-site extraction) runs as a prebuilt Rust (napi-rs) module on mainstream platforms; it transparently falls back to the pure-TypeScript implementation when no prebuilt binary is available
 - **Dual-Text strategy**: `displayCode` for presentation, `vectorText` for embedding
 - **Gap-Aware merging**: handles code gaps intelligently while preserving semantic integrity
 - **Breadcrumb injection**: vector text carries hierarchical paths to boost recall
@@ -105,6 +106,8 @@ npm install -g @chiway/contextweaver
 # Or with pnpm
 pnpm add -g @chiway/contextweaver
 ```
+
+> On mainstream platforms (linux-x64-gnu / linux-arm64-gnu / darwin-x64 / darwin-arm64 / win32-x64) npm automatically pulls a prebuilt native chunker via `optionalDependencies`. On other platforms the install still succeeds and the engine runs on the TypeScript fallback path.
 
 ### Initialize Configuration
 
@@ -364,7 +367,7 @@ flowchart TB
 | **VectorStore** | LanceDB adapter; exposes pure vector operations only |
 | **Database (SQLite)** | Metadata storage + FTS5 full-text index + statistics counters, schema_version=3 |
 | **Bootstrap** | Cross-store init coordinator: pending_marks replay + LanceDB schema migration (v1.4.0+) |
-| **SemanticSplitter** | AST semantic chunker (Tree-sitter); normalizes offsets to the UTF-16 character domain on write |
+| **SemanticSplitter** | AST semantic chunker (Tree-sitter); normalizes offsets to the UTF-16 character domain on write. Runs as a native Rust module when available, otherwise pure TS (v1.6.0+) |
 | **Watcher** | File-watch coordinator (v1.5.0+): debounce + scan de-duplication + ignore filtering |
 | **Stats** | Statistics aggregation layer (v1.5.0+): combines index/search/health metrics |
 
