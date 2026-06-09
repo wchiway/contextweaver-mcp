@@ -1,6 +1,6 @@
 {
   "name": "@chiway/contextweaver",
-  "version": "1.6.0-alpha.0",
+  "version": "1.6.0-alpha.1",
   "mcpName": "io.github.wchiway/contextweaver",
   "description": "A context weaving tool for LLMs",
   "license": "MIT",
@@ -63,7 +63,7 @@
     "zod": "^4.2.1"
   },
   "optionalDependencies": {
-    "@chiway/contextweaver-chunker": "1.6.0-alpha.0"
+    "@chiway/contextweaver-chunker": "1.6.0-alpha.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.10",
