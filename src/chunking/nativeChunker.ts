@@ -80,6 +80,7 @@ export interface NativeChunker {
     config?: NativeSplitterConfig,
   ): NativeChunk[];
   extractImports(kind: string, content: string): string[];
+  decodeBytes(buffer: Buffer): { content: string; originalEncoding: string };
 }
 
 function tryLoad(): NativeChunker | null {
