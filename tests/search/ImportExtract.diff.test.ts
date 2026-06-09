@@ -133,7 +133,7 @@ import a.b.C;`,
   },
   {
     kind: 'rust',
-    name: 'pub mod / mod / use crate|super|self',
+    name: 'pub mod / mod / use crate|super|self（外部 use std 应被排除）',
     code: `pub mod foo;
 mod bar;
 use crate::a::b;
