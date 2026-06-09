@@ -4,6 +4,7 @@
 extern crate napi_derive;
 
 mod calls;
+mod encoding;
 mod imports;
 mod language_spec;
 mod parser_pool;
@@ -227,6 +228,30 @@ pub fn extract_symbols(code: String, language: String) -> Vec<JsCodeSymbol> {
 #[napi(js_name = "extractImports")]
 pub fn extract_imports(kind: String, content: String) -> Vec<String> {
     imports::extract_imports(&kind, &content)
+}
+
+// ── decodeBytes: detect encoding + decode raw file bytes to UTF-8 ─────────────
+
+#[napi(object)]
+pub struct JsDecodedFile {
+    /// Always UTF-8.
+    pub content: String,
+    /// Detected source encoding label (informational; matches the
+    /// `originalEncoding` field TS reports).
+    pub original_encoding: String,
+}
+
+/// Port of the decode step in `src/utils/encoding.ts` `readFileWithEncoding`.
+/// Takes raw file bytes (TS keeps `fs.readFile`), detects the encoding via BOM
+/// then chardetng, and returns UTF-8 content. Caller falls back to the TS
+/// chardet/iconv path when this native module is unavailable.
+#[napi(js_name = "decodeBytes")]
+pub fn decode_bytes(buffer: napi::bindgen_prelude::Buffer) -> JsDecodedFile {
+    let decoded = encoding::decode_bytes(&buffer);
+    JsDecodedFile {
+        content: decoded.content,
+        original_encoding: decoded.original_encoding,
+    }
 }
 
 // ── processFile: single parse → chunks + symbols + callSites ──────────────────
