@@ -72,7 +72,11 @@ jobs:
           key: ${{ matrix.target }}-cargo-${{ hashFiles('crates/chunker/Cargo.lock') }}
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        # Only @napi-rs/cli (pure JS) is needed to build the Rust addon below.
+        # --ignore-scripts skips node-gyp builds of tree-sitter-* packages, which
+        # are unused here and fail on the Windows runner (node-gyp 11 mis-detects
+        # VS via a stdout-buffer overflow).
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
 
       - name: Build native addon
         working-directory: ${{ env.CHUNKER_DIR }}
