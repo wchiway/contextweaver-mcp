@@ -72,7 +72,7 @@ jobs:
           key: ${{ matrix.target }}-cargo-${{ hashFiles('crates/chunker/Cargo.lock') }}
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build native addon
         working-directory: ${{ env.CHUNKER_DIR }}
@@ -130,7 +130,7 @@ jobs:
           cache: "pnpm"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build local npm package
         run: pnpm run build:release
