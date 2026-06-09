@@ -4,6 +4,7 @@
 extern crate napi_derive;
 
 mod calls;
+mod imports;
 mod language_spec;
 mod parser_pool;
 mod source_adapter;
@@ -215,6 +216,17 @@ pub fn extract_symbols(code: String, language: String) -> Vec<JsCodeSymbol> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+// ── extractImports: import strings per resolver kind, returned to JS ──────────
+
+/// Regex port of `src/search/resolvers/*.ts` `extract()`. `kind` ∈
+/// {jsts, python, go, java, rust, cpp, csharp}; output is byte-identical to the
+/// TS resolver of the same language so the TS `resolve()` keeps working.
+/// Unknown kind returns empty (mirrors GraphExpander skipping unmatched files).
+#[napi(js_name = "extractImports")]
+pub fn extract_imports(kind: String, content: String) -> Vec<String> {
+    imports::extract_imports(&kind, &content)
 }
 
 // ── processFile: single parse → chunks + symbols + callSites ──────────────────

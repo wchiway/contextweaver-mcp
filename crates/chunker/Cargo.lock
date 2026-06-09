@@ -40,6 +40,7 @@ dependencies = [
  "napi",
  "napi-build 1.2.1",
  "napi-derive",
+ "regex",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",
