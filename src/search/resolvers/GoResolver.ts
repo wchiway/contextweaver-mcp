@@ -3,13 +3,20 @@
  */
 
 import type { ImportResolver } from './types.js';
+import { extractImportsNativeOrFallback } from './types.js';
 
 export class GoResolver implements ImportResolver {
+  readonly kind = 'go';
+
   supports(filePath: string): boolean {
     return filePath.endsWith('.go');
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     const imports: string[] = [];
 
     // 匹配单行 import: import "fmt"

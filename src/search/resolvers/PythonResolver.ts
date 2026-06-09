@@ -3,14 +3,20 @@
  */
 
 import type { ImportResolver } from './types.js';
-import { commonPrefixLength } from './types.js';
+import { commonPrefixLength, extractImportsNativeOrFallback } from './types.js';
 
 export class PythonResolver implements ImportResolver {
+  readonly kind = 'python';
+
   supports(filePath: string): boolean {
     return filePath.endsWith('.py');
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     // 匹配: from xxx import yyy 或 import xxx
     // 也支持相对导入: from . import xxx, from ..utils import yyy
     const pattern = /^\s*(?:from\s+(\.{0,3}[\w.]*)\s+import|import\s+([\w.]+))/gm;

@@ -2,14 +2,24 @@
  * C# 解析策略 (命名空间→路径映射 + 后缀匹配)
  */
 
-import { commonPrefixLength, type ImportResolver } from './types.js';
+import {
+  commonPrefixLength,
+  extractImportsNativeOrFallback,
+  type ImportResolver,
+} from './types.js';
 
 export class CSharpResolver implements ImportResolver {
+  readonly kind = 'csharp';
+
   supports(filePath: string): boolean {
     return filePath.endsWith('.cs');
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     const imports: string[] = [];
     // 匹配: using Namespace.Type; 或 using Alias = Namespace.Type;
     // 不匹配: using static, global using

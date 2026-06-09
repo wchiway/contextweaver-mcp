@@ -5,17 +5,27 @@
  * 忽略尖括号形式（#include <header>）。
  */
 
-import { commonPrefixLength, type ImportResolver } from './types.js';
+import {
+  commonPrefixLength,
+  extractImportsNativeOrFallback,
+  type ImportResolver,
+} from './types.js';
 
 const CPP_EXTENSIONS = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh', '.hxx']);
 
 export class CppResolver implements ImportResolver {
+  readonly kind = 'cpp';
+
   supports(filePath: string): boolean {
     const ext = filePath.slice(filePath.lastIndexOf('.'));
     return CPP_EXTENSIONS.has(ext);
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     const imports: string[] = [];
 
     // 匹配 #include "xxx" 形式（本地头文件）

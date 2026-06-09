@@ -79,6 +79,7 @@ export interface NativeChunker {
     language: string,
     config?: NativeSplitterConfig,
   ): NativeChunk[];
+  extractImports(kind: string, content: string): string[];
 }
 
 function tryLoad(): NativeChunker | null {

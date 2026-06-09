@@ -3,8 +3,10 @@
  */
 
 import type { ImportResolver } from './types.js';
+import { extractImportsNativeOrFallback } from './types.js';
 
 export class JsTsResolver implements ImportResolver {
+  readonly kind = 'jsts';
   private exts = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cts', '.cjs'];
 
   // TypeScript ESM 项目使用 .js 扩展名导入，但源文件是 .ts
@@ -21,6 +23,10 @@ export class JsTsResolver implements ImportResolver {
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     const imports: string[] = [];
     const patterns = [
       // import xxx from './foo' 或 import { xxx } from './foo'
