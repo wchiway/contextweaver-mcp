@@ -338,7 +338,7 @@ impl SemanticSplitter {
         comment_types: &[&'static str],
         adapter: &SourceAdapter,
     ) {
-        let is_comment = |k: &str| comment_types.iter().any(|c| *c == k);
+        let is_comment = |k: &str| comment_types.contains(&k);
 
         let mut absorbed: Vec<NodeRef> = Vec::new();
         let mut absorbed_nws: u32 = 0;
