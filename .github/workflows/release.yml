@@ -15,12 +15,87 @@ permissions:
   contents: write
   id-token: write
 
-jobs:
-  build-and-publish:
-    name: Build and Publish
-    if: ${{ (github.event_name == 'workflow_dispatch' && !contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && !contains(github.ref_name, '-')) }}
-    runs-on: ubuntu-latest
+env:
+  CHUNKER_DIR: crates/chunker
 
+jobs:
+  # ── 阶段 1：跨平台编译 native 分片器 ────────────────────────────────
+  build:
+    name: Build ${{ matrix.target }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && !contains(github.event.inputs.version, '-')) || (github.event_name != 'workflow_dispatch' && !contains(github.ref_name, '-')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: x86_64-apple-darwin
+            host: macos-latest
+          - target: aarch64-apple-darwin
+            host: macos-latest
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+    runs-on: ${{ matrix.host }}
+    steps:
+      - name: Checkout Code (tag on dispatch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.CHUNKER_DIR }}/target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('crates/chunker/Cargo.lock') }}
+
+      - name: Install dependencies
+        # Only @napi-rs/cli (pure JS) is needed to build the Rust addon below.
+        # --ignore-scripts skips node-gyp builds of tree-sitter-* packages, which
+        # are unused here and fail on the Windows runner (node-gyp 11 mis-detects
+        # VS via a stdout-buffer overflow).
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Build native addon
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: pnpm exec napi build --platform --release --target ${{ matrix.target }} --use-napi-cross
+
+      - name: Upload native binding artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: ${{ env.CHUNKER_DIR }}/*.node
+          if-no-files-found: error
+
+  # ── 阶段 2：发布 native 分片器（平台子包 → chunker 主包）────────────
+  publish-chunker:
+    name: Publish chunker packages
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.rel.outputs.ver }}
+      tag: ${{ steps.rel.outputs.tag }}
     steps:
       - name: Checkout Code (tag on dispatch)
         uses: actions/checkout@v4
@@ -52,16 +127,93 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
           cache: "pnpm"
-      
+
       - name: Upgrade npm for Trusted Publishing (OIDC)
-        run: |
-          npm i -g npm@^11.5.1
-          npm -v
-          node -v
-          pnpm -v
+        run: npm i -g npm@^11.5.1
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Verify chunker version matches tag
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "${{ steps.rel.outputs.ver }}" != "$PKG" ]; then
+            echo "Version mismatch: tag v${{ steps.rel.outputs.ver }} != crates/chunker/package.json $PKG"
+            exit 1
+          fi
+
+      - name: Download all native bindings
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ env.CHUNKER_DIR }}/artifacts
+          pattern: bindings-*
+          merge-multiple: true
+
+      - name: Create platform package dirs
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: pnpm exec napi create-npm-dirs
+
+      - name: Distribute bindings into platform packages
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: pnpm exec napi artifacts --output-dir artifacts --npm-dir npm
+
+      # 注入平台子包到 chunker 主包的 optionalDependencies + 写各子包版本，
+      # --skip-optional-publish 仅更新元数据/拷贝产物，发布由下方显式 npm publish 控制（保留 OIDC provenance）
+      - name: Prepare chunker packages for publish
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: pnpm exec napi pre-publish -t npm --skip-optional-publish
+
+      - name: Publish platform packages to NPM
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: |
+          for pkg in npm/*/; do
+            name="$(node -p "require('./${pkg}package.json').name")"
+            if npm view "${name}@${{ steps.rel.outputs.ver }}" version >/dev/null 2>&1; then
+              echo "skip ${name}@${{ steps.rel.outputs.ver }} (already published)"
+            else
+              npm publish "${pkg}" --access public --provenance
+            fi
+          done
+
+      - name: Publish chunker main package to NPM
+        working-directory: ${{ env.CHUNKER_DIR }}
+        run: |
+          if npm view "@chiway/contextweaver-chunker@${{ steps.rel.outputs.ver }}" version >/dev/null 2>&1; then
+            echo "skip chunker main (already published)"
+          else
+            npm publish --no-git-checks --access public --provenance
+          fi
+
+  # ── 阶段 3：发布主应用包 + GitHub Release + MCP Registry ────────────
+  publish-main:
+    name: Publish main package
+    needs: publish-chunker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code (tag on dispatch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
+
+      - name: Upgrade npm for Trusted Publishing (OIDC)
+        run: npm i -g npm@^11.5.1
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build
         run: pnpm run build:release
@@ -69,29 +221,28 @@ jobs:
       - name: Verify tag matches package.json version
         run: |
           PKG="$(node -p "require('./package.json').version")"
-          if [ "${{ steps.rel.outputs.ver }}" != "$PKG" ]; then
-            echo "Version mismatch: tag v${{ steps.rel.outputs.ver }} != package.json $PKG"
+          if [ "${{ needs.publish-chunker.outputs.ver }}" != "$PKG" ]; then
+            echo "Version mismatch: tag v${{ needs.publish-chunker.outputs.ver }} != package.json $PKG"
             exit 1
           fi
 
-      - name: Check if version already exists on npm (dispatch only)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Check if version already exists on npm
         id: npmcheck
         run: |
-          if npm view @chiway/contextweaver@${{ steps.rel.outputs.ver }} version >/dev/null 2>&1; then
+          if npm view @chiway/contextweaver@${{ needs.publish-chunker.outputs.ver }} version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish to NPM
-        if: github.event_name != 'workflow_dispatch' || steps.npmcheck.outputs.exists != 'true'
+        if: steps.npmcheck.outputs.exists != 'true'
         run: npm publish --no-git-checks --access public --provenance
 
       - name: Collect changelog input
         id: changelog_input
         run: |
-          TAG="${{ steps.rel.outputs.tag }}"
+          TAG="${{ needs.publish-chunker.outputs.tag }}"
           PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" --match "v*" 2>/dev/null || true)"
 
           if [ -n "$PREV_TAG" ]; then
@@ -123,7 +274,7 @@ jobs:
 
           if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
             {
-              echo "## ContextWeaver ${{ steps.rel.outputs.tag }}"
+              echo "## ContextWeaver ${{ needs.publish-chunker.outputs.tag }}"
               echo
               echo "### Changelog"
               echo
@@ -153,7 +304,7 @@ jobs:
               },
               {
                 role: 'user',
-                content: `Generate an English stable release changelog for ContextWeaver ${{ steps.rel.outputs.tag }}.\n\n${source}`,
+                content: `Generate an English stable release changelog for ContextWeaver ${{ needs.publish-chunker.outputs.tag }}.\n\n${source}`,
               },
             ],
             stream: false,
@@ -184,7 +335,7 @@ jobs:
           fi
 
           {
-            echo "## ContextWeaver ${{ steps.rel.outputs.tag }}"
+            echo "## ContextWeaver ${{ needs.publish-chunker.outputs.tag }}"
             echo
             cat ai-summary.md
             echo
@@ -200,25 +351,23 @@ jobs:
       - name: Upload changelog artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.rel.outputs.tag }}-changelog
+          name: ${{ needs.publish-chunker.outputs.tag }}-changelog
           path: |
             changelog-source.md
             release-body.md
             ai-summary.md
           if-no-files-found: ignore
 
-      # push tag 和手动重跑都创建/更新 GitHub Release（手动重跑时显式指定 tag_name）
       - name: Create GitHub Release
-        if: startsWith(steps.rel.outputs.tag, 'v')
+        if: startsWith(needs.publish-chunker.outputs.tag, 'v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.rel.outputs.tag }}
+          tag_name: ${{ needs.publish-chunker.outputs.tag }}
           generate_release_notes: true
           draft: false
           prerelease: false
           body_path: release-body.md
 
-      # 发布到 MCP Registry
       - name: Install mcp-publisher
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher

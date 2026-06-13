@@ -3,13 +3,20 @@
  */
 
 import type { ImportResolver } from './types.js';
+import { extractImportsNativeOrFallback } from './types.js';
 
 export class JavaResolver implements ImportResolver {
+  readonly kind = 'java';
+
   supports(filePath: string): boolean {
     return filePath.endsWith('.java');
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     const imports: string[] = [];
     // 匹配: import com.example.MyClass; 或 import static com.example.MyClass.method;
     const pattern = /^\s*import\s+(?:static\s+)?([\w.]+);/gm;

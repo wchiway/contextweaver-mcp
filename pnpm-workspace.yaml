@@ -1,3 +1,6 @@
+packages:
+  - 'crates/*'
+
 allowBuilds:
   '@keqingmoe/tree-sitter': true
   '@tree-sitter-grammars/tree-sitter-lua': true

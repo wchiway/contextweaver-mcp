@@ -51,6 +51,7 @@
 
 ### 🧠 AST 语义分片
 - **Tree-sitter 解析**：支持 TypeScript、JavaScript、Python、Go、Java、Rust、C、C++、C# 等语言
+- **Rust 原生分片器**（v1.6.0+）：CPU 密集的分片层（Tree-sitter 解析 + AST 遍历 + 符号/调用点提取）在主流平台以预构建的 Rust（napi-rs）原生模块运行；无预构建二进制时自动透明回退到纯 TypeScript 实现
 - **Dual-Text 策略**：`displayCode` 用于展示，`vectorText` 用于 Embedding
 - **Gap-Aware 合并**：智能处理代码间隙，保持语义完整性
 - **Breadcrumb 注入**：向量文本包含层级路径，提升检索召回率
@@ -105,6 +106,8 @@ npm install -g @chiway/contextweaver
 # 或使用 pnpm
 pnpm add -g @chiway/contextweaver
 ```
+
+> 在主流平台（linux-x64-gnu / linux-arm64-gnu / darwin-x64 / darwin-arm64 / win32-x64）上，npm 会通过 `optionalDependencies` 自动拉取预构建的原生分片器。其他平台安装同样成功，引擎自动走 TypeScript 回退路径。
 
 ### 初始化配置
 
@@ -363,7 +366,7 @@ flowchart TB
 | **VectorStore** | LanceDB 适配层，仅暴露纯 vector 操作 |
 | **Database (SQLite)** | 元数据存储 + FTS5 全文索引 + 统计计数器，schema_version=3 |
 | **Bootstrap** | 跨库初始化协调器：pending_marks 重放 + LanceDB schema 迁移（v1.4.0+） |
-| **SemanticSplitter** | AST 语义分片器，基于 Tree-sitter 解析，写入时统一到 UTF-16 字符域 |
+| **SemanticSplitter** | AST 语义分片器，基于 Tree-sitter 解析，写入时统一到 UTF-16 字符域；可用时以 Rust 原生模块运行，否则走纯 TS（v1.6.0+） |
 | **Watcher** | 文件监听协调器（v1.5.0+），防抖 + 扫描去重 + 忽略过滤 |
 | **Stats** | 统计聚合层（v1.5.0+），组合索引/搜索/健康三类指标 |
 

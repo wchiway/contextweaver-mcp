@@ -3,13 +3,20 @@
  */
 
 import type { ImportResolver } from './types.js';
+import { extractImportsNativeOrFallback } from './types.js';
 
 export class RustResolver implements ImportResolver {
+  readonly kind = 'rust';
+
   supports(filePath: string): boolean {
     return filePath.endsWith('.rs');
   }
 
   extract(content: string): string[] {
+    return extractImportsNativeOrFallback(this.kind, content, () => this.extractTs(content));
+  }
+
+  private extractTs(content: string): string[] {
     const imports: string[] = [];
 
     // 匹配 mod xxx; (外部模块声明)

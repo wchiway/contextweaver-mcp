@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import chardet from 'chardet';
 import iconv from 'iconv-lite';
+import { getNativeChunker } from '../chunking/nativeChunker.js';
 
 /**
  * 支持的编码列表（按优先级排序）
@@ -89,6 +90,28 @@ export async function readFileWithEncoding(filePath: string): Promise<{
 }> {
   const buffer = await fs.readFile(filePath);
 
+  // 优先用 Rust native 检测+解码（chardetng + encoding_rs）；不可用或抛错时回退 TS。
+  const native = getNativeChunker();
+  if (native) {
+    try {
+      const { content, originalEncoding } = native.decodeBytes(buffer);
+      return { content, encoding: 'utf-8', originalEncoding };
+    } catch {
+      // 回退到 TS chardet/iconv 路径
+    }
+  }
+
+  return decodeBytesTs(buffer);
+}
+
+/**
+ * TS 解码路径（chardet 检测 + iconv-lite 转码），native 不可用时的 fallback。
+ */
+function decodeBytesTs(buffer: Buffer): {
+  content: string;
+  encoding: string;
+  originalEncoding: string;
+} {
   // 检测编码
   const bom = detectBOM(buffer);
   let encoding = bom;
