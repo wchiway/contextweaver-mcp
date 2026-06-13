@@ -1,6 +1,6 @@
 {
   "name": "@chiway/contextweaver",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "mcpName": "io.github.wchiway/contextweaver",
   "description": "A context weaving tool for LLMs",
   "license": "MIT",
